@@ -4,6 +4,11 @@
 	"description": "Copilot Chat model provider for a self-hosted Bifrost LLM gateway, with automatic model and context-size discovery.",
 	"version": "0.2.1",
 	"publisher": "Yeti47",
+	"license": "MIT",
+	"repository": {
+		"type": "git",
+		"url": "https://github.com/Yeti47/vs-code-bifrost-provider.git"
+	},
 	"private": true,
 	"engines": {
 		"vscode": "^1.125.0"
