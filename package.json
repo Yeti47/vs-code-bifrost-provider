@@ -39,7 +39,9 @@
 				},
 				"bifrost.contextSizeOverrides": {
 					"type": "object",
-					"additionalProperties": { "type": "number" },
+					"additionalProperties": {
+						"type": "number"
+					},
 					"default": {},
 					"description": "Some Bifrost providers (e.g. ollama, custom OpenAI-compatible providers) report no context-size metadata at all, so a conservative default is used instead. Use this to correct it. Keys can be an exact model id (e.g. \"ollama/llama3.1\") or a provider prefix (e.g. \"ollama\") used when no exact key matches. Values are the model's max input tokens."
 				}
@@ -50,12 +52,15 @@
 		"vscode:prepublish": "npm run compile",
 		"compile": "tsc -p ./",
 		"watch": "tsc -watch -p ./",
-		"package": "vsce package"
+		"package": "vsce package",
+		"test": "vitest run",
+		"test:watch": "vitest"
 	},
 	"devDependencies": {
 		"@types/node": "22.20.1",
 		"@types/vscode": "1.125.0",
 		"@vscode/vsce": "3.9.2",
-		"typescript": "5.9.3"
+		"typescript": "5.9.3",
+		"vitest": "4.1.10"
 	}
 }
