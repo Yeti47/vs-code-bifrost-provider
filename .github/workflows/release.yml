@@ -1,0 +1,54 @@
+name: Release
+
+# Tag-based deployment: push a tag "vX.Y.Z" matching the version in package.json to cut a release.
+# workflow_dispatch lets you re-run the same pipeline manually against an existing tag ref.
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '22'
+          cache: npm
+
+      - run: npm ci
+
+      - run: npm test
+
+      - run: npm run compile
+
+      - name: Verify tag matches package.json version
+        run: |
+          tag="${GITHUB_REF_NAME}"
+          version="${tag#v}"
+          pkg_version="$(node -p "require('./package.json').version")"
+          if [ "$version" != "$pkg_version" ]; then
+            echo "::error::Tag $tag does not match package.json version $pkg_version"
+            exit 1
+          fi
+          echo "VSIX_PATH=$(node -p "require('./package.json').name")-${version}.vsix" >> "$GITHUB_ENV"
+
+      - run: npm run package
+
+      - name: Create GitHub release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create "${GITHUB_REF_NAME}" "${VSIX_PATH}" \
+            --title "${GITHUB_REF_NAME}" \
+            --generate-notes

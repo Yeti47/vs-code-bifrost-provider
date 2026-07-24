@@ -6,7 +6,7 @@
 	"publisher": "Yeti47",
 	"private": true,
 	"engines": {
-		"vscode": "^1.104.0"
+		"vscode": "^1.125.0"
 	},
 	"categories": [
 		"AI",

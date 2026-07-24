@@ -1,8 +1,11 @@
 .vscode/**
 .claude/**
+.github/**
 src/**
+test/**
 .gitignore
 tsconfig.json
+vitest.config.ts
 **/tsconfig.tsbuildinfo
 **/*.map
 node_modules/**
