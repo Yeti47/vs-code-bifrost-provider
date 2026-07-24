@@ -1,0 +1,61 @@
+{
+	"name": "bifrost-copilot-provider",
+	"displayName": "Bifrost Copilot Provider",
+	"description": "Copilot Chat model provider for a self-hosted Bifrost LLM gateway, with automatic model and context-size discovery.",
+	"version": "0.2.1",
+	"publisher": "Yeti47",
+	"private": true,
+	"engines": {
+		"vscode": "^1.104.0"
+	},
+	"categories": [
+		"AI",
+		"Chat"
+	],
+	"activationEvents": [],
+	"main": "./out/extension.js",
+	"contributes": {
+		"languageModelChatProviders": [
+			{
+				"vendor": "bifrost",
+				"displayName": "Bifrost",
+				"managementCommand": "bifrost.manage"
+			}
+		],
+		"commands": [
+			{
+				"command": "bifrost.manage",
+				"title": "Configure Bifrost Connection",
+				"category": "Bifrost"
+			}
+		],
+		"configuration": {
+			"title": "Bifrost",
+			"properties": {
+				"bifrost.baseUrl": {
+					"type": "string",
+					"default": "",
+					"description": "Base URL of your Bifrost gateway, e.g. https://bifrost.example.com"
+				},
+				"bifrost.contextSizeOverrides": {
+					"type": "object",
+					"additionalProperties": { "type": "number" },
+					"default": {},
+					"description": "Some Bifrost providers (e.g. ollama, custom OpenAI-compatible providers) report no context-size metadata at all, so a conservative default is used instead. Use this to correct it. Keys can be an exact model id (e.g. \"ollama/llama3.1\") or a provider prefix (e.g. \"ollama\") used when no exact key matches. Values are the model's max input tokens."
+				}
+			}
+		}
+	},
+	"scripts": {
+		"vscode:prepublish": "npm run compile",
+		"compile": "tsc -p ./",
+		"watch": "tsc -watch -p ./",
+		"package": "vsce package"
+	},
+	"devDependencies": {
+		"@types/node": "22.20.1",
+		"@types/vscode": "1.125.0",
+		"@vscode/vsce": "3.9.2",
+		"typescript": "5.9.3"
+	}
+}
