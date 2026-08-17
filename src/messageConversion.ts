@@ -1,11 +1,21 @@
 import * as vscode from 'vscode';
+import { applyReasoning } from './reasoning';
+import { ModelReasoningCache } from './reasoningCache';
+import { isThinkingPart, thinkingPartText } from './thinking';
 import { OpenAIContentPart, OpenAIMessage, OpenAITool, OpenAIToolCall } from './types';
 
-export function toOpenAIMessages(messages: readonly vscode.LanguageModelChatRequestMessage[]): OpenAIMessage[] {
+/**
+ * @param reasoning Optional fallback source of assistant reasoning, used when the chat client did
+ * not replay thinking parts in the history. See {@link ModelReasoningCache}.
+ */
+export function toOpenAIMessages(
+	messages: readonly vscode.LanguageModelChatRequestMessage[],
+	reasoning?: ModelReasoningCache
+): OpenAIMessage[] {
 	const result: OpenAIMessage[] = [];
 	for (const message of messages) {
 		if (message.role === vscode.LanguageModelChatMessageRole.Assistant) {
-			result.push(convertAssistantMessage(message));
+			result.push(convertAssistantMessage(message, reasoning));
 		} else {
 			result.push(...convertUserMessage(message));
 		}
@@ -31,8 +41,12 @@ export function toolModeToChoice(mode: vscode.LanguageModelChatToolMode): 'auto'
 	return mode === vscode.LanguageModelChatToolMode.Required ? 'required' : 'auto';
 }
 
-function convertAssistantMessage(message: vscode.LanguageModelChatRequestMessage): OpenAIMessage {
+function convertAssistantMessage(
+	message: vscode.LanguageModelChatRequestMessage,
+	reasoning?: ModelReasoningCache
+): OpenAIMessage {
 	const textParts: string[] = [];
+	const thinkingParts: string[] = [];
 	const toolCalls: OpenAIToolCall[] = [];
 
 	for (const part of message.content) {
@@ -44,6 +58,8 @@ function convertAssistantMessage(message: vscode.LanguageModelChatRequestMessage
 				type: 'function',
 				function: { name: part.name, arguments: JSON.stringify(part.input ?? {}) }
 			});
+		} else if (isThinkingPart(part)) {
+			thinkingParts.push(thinkingPartText(part));
 		}
 	}
 
@@ -53,6 +69,22 @@ function convertAssistantMessage(message: vscode.LanguageModelChatRequestMessage
 	};
 	if (toolCalls.length > 0) {
 		openAiMessage.tool_calls = toolCalls;
+	}
+
+	// Our own record is preferred over what the client replayed: it preserves the upstream's dialect
+	// and its verbatim `reasoning_details`, where a thinking part only carries flattened text. The
+	// replayed text is the fallback for turns the cache has already evicted.
+	const cached = reasoning?.lookup(toolCalls.map((call) => call.id));
+	const replayed = thinkingParts.join('');
+	// Only fall back to replayed text for a model we have actually seen produce reasoning. History
+	// keeps thinking parts from whichever model wrote them, so after a mid-conversation model switch
+	// they are still present — replaying them blindly would send a reasoning field to a model that
+	// has never emitted one, which is what the per-model keying exists to prevent.
+	const dialect = reasoning?.dialect();
+	if (cached) {
+		applyReasoning(openAiMessage, cached);
+	} else if (replayed && dialect) {
+		applyReasoning(openAiMessage, { text: replayed, textField: dialect });
 	}
 	return openAiMessage;
 }

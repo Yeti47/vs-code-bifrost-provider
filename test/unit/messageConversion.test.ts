@@ -6,6 +6,8 @@ import {
 	toOpenAITools,
 	toolModeToChoice
 } from '../../src/messageConversion';
+import { ReasoningCache } from '../../src/reasoningCache';
+import { __makeThinkingPart } from '../mocks/vscode';
 
 function userMessage(content: unknown[], name?: string) {
 	return { role: vscode.LanguageModelChatMessageRole.User, content, name } as unknown as import('vscode').LanguageModelChatRequestMessage;
@@ -54,6 +56,125 @@ describe('toOpenAIMessages', () => {
 
 		expect(result[0]).toMatchObject({ role: 'assistant', content: 'thinking...' });
 		expect(result[0].tool_calls).toHaveLength(1);
+	});
+
+	it('replays reasoning from a thinking part in the history', () => {
+		const cache = new ReasoningCache().forModel('deepseek-v4-pro');
+		cache.noteDialect('reasoning_content');
+
+		const result = toOpenAIMessages(
+			[
+				assistantMessage([
+					__makeThinkingPart('let me think'),
+					new vscode.LanguageModelToolCallPart('call-1', 'search', {})
+				])
+			],
+			cache
+		);
+
+		expect(result[0].reasoning_content).toBe('let me think');
+	});
+
+	it('replays thinking part text in the dialect the model actually streams', () => {
+		const cache = new ReasoningCache().forModel('opencode-go/deepseek-v4-pro');
+		cache.noteDialect('reasoning');
+
+		const result = toOpenAIMessages(
+			[assistantMessage([__makeThinkingPart('let me think')])],
+			cache
+		);
+
+		expect(result[0].reasoning).toBe('let me think');
+		expect(result[0]).not.toHaveProperty('reasoning_content');
+	});
+
+	it('joins multiple thinking parts and a fragmented thinking value', () => {
+		const cache = new ReasoningCache().forModel('deepseek-v4-pro');
+		cache.noteDialect('reasoning_content');
+
+		const result = toOpenAIMessages(
+			[assistantMessage([__makeThinkingPart(['let ', 'me ']), __makeThinkingPart('think')])],
+			cache
+		);
+
+		expect(result[0].reasoning_content).toBe('let me think');
+	});
+
+	it('sends no reasoning to a model never seen producing any, even when history has thinking parts', () => {
+		// Mid-conversation model switch: history still carries the previous model's thinking parts.
+		const shared = new ReasoningCache();
+		shared.forModel('deepseek-v4-pro').noteDialect('reasoning');
+
+		const result = toOpenAIMessages(
+			[assistantMessage([__makeThinkingPart('reasoning from the other model')])],
+			shared.forModel('openai/gpt-5')
+		);
+
+		expect(result[0]).not.toHaveProperty('reasoning');
+		expect(result[0]).not.toHaveProperty('reasoning_content');
+		expect(result[0]).not.toHaveProperty('reasoning_details');
+	});
+
+	it('sends no reasoning at all when no cache is supplied', () => {
+		const result = toOpenAIMessages([assistantMessage([__makeThinkingPart('let me think')])]);
+
+		expect(result[0]).not.toHaveProperty('reasoning');
+		expect(result[0]).not.toHaveProperty('reasoning_content');
+	});
+
+	it('falls back to the reasoning cache when the client dropped the thinking part', () => {
+		const cache = new ReasoningCache().forModel('deepseek-v4-pro');
+		cache.remember(['call-1'], { text: 'remembered reasoning', textField: 'reasoning_content' });
+
+		const result = toOpenAIMessages(
+			[assistantMessage([new vscode.LanguageModelToolCallPart('call-1', 'search', {})])],
+			cache
+		);
+
+		expect(result[0].reasoning_content).toBe('remembered reasoning');
+	});
+
+	it('prefers the cached copy over replayed text, since only it carries reasoning_details', () => {
+		const cache = new ReasoningCache().forModel('deepseek-v4-pro');
+		cache.remember(['call-1'], {
+			text: 'remembered reasoning',
+			textField: 'reasoning',
+			details: [{ type: 'reasoning.text', index: 0, signature: 'sig' }]
+		});
+
+		const result = toOpenAIMessages(
+			[
+				assistantMessage([
+					__makeThinkingPart('replayed reasoning'),
+					new vscode.LanguageModelToolCallPart('call-1', 'search', {})
+				])
+			],
+			cache
+		);
+
+		expect(result[0].reasoning).toBe('remembered reasoning');
+		expect(result[0].reasoning_details).toEqual([{ type: 'reasoning.text', index: 0, signature: 'sig' }]);
+	});
+
+	it('omits every reasoning field when the model produced no reasoning', () => {
+		const cache = new ReasoningCache().forModel('deepseek-v4-pro');
+
+		const result = toOpenAIMessages(
+			[assistantMessage([new vscode.LanguageModelToolCallPart('call-1', 'search', {})])],
+			cache
+		);
+
+		expect(result[0]).not.toHaveProperty('reasoning_content');
+		expect(result[0]).not.toHaveProperty('reasoning');
+		expect(result[0]).not.toHaveProperty('reasoning_details');
+	});
+
+	it('does not treat a thinking part as assistant text content', () => {
+		const result = toOpenAIMessages([
+			assistantMessage([__makeThinkingPart('hidden'), new vscode.LanguageModelTextPart('shown')])
+		]);
+
+		expect(result[0].content).toBe('shown');
 	});
 
 	it('collapses a single text part user message into a plain string content', () => {

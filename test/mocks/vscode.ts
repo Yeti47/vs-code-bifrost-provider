@@ -98,6 +98,36 @@ export class LanguageModelDataPart {
 	constructor(public data: Uint8Array, public mimeType: string) { }
 }
 
+// Named class expression: the binding is `...Impl`, but `.name` is `LanguageModelThinkingPart`, which
+// is what the real host class reports and what `src/thinking.ts` falls back to matching on.
+const LanguageModelThinkingPartImpl = class LanguageModelThinkingPart {
+	constructor(
+		public value: string | string[],
+		public id?: string,
+		public metadata?: { readonly [key: string]: unknown }
+	) { }
+};
+
+/**
+ * Exported via `let` so tests can simulate a host without the (still proposed) thinking part API —
+ * ES module live bindings make the change visible through the `import * as vscode` namespace that
+ * `src/thinking.ts` reads. See `__setThinkingPartAvailable`.
+ */
+export let LanguageModelThinkingPart: typeof LanguageModelThinkingPartImpl | undefined =
+	LanguageModelThinkingPartImpl;
+
+export function __setThinkingPartAvailable(available: boolean): void {
+	LanguageModelThinkingPart = available ? LanguageModelThinkingPartImpl : undefined;
+}
+
+/** Builds a thinking part regardless of whether the API is currently "available" to the extension. */
+export function __makeThinkingPart(
+	value: string | string[],
+	id?: string
+): InstanceType<typeof LanguageModelThinkingPartImpl> {
+	return new LanguageModelThinkingPartImpl(value, id);
+}
+
 export class Uri {
 	private constructor(public readonly fsPath: string) { }
 	static file(path: string): Uri {
@@ -153,10 +183,19 @@ export const workspace = {
 	}
 };
 
+/** Lines written to every output channel created during a test, newest last. */
+export const __outputChannelLines: string[] = [];
+
 export const window = {
 	showInputBox: vi.fn(),
 	showInformationMessage: vi.fn(),
-	showErrorMessage: vi.fn()
+	showErrorMessage: vi.fn(),
+	createOutputChannel: vi.fn((_name: string) => ({
+		appendLine: (line: string) => {
+			__outputChannelLines.push(line);
+		},
+		dispose: () => { }
+	}))
 };
 
 export const commands = {
@@ -180,9 +219,12 @@ export function __fireConfigurationChange(affectedSection: string): void {
 export function __resetMockVscodeState(): void {
 	configValues.clear();
 	fsFiles.clear();
+	__setThinkingPartAvailable(true);
+	__outputChannelLines.length = 0;
 	window.showInputBox.mockReset();
 	window.showInformationMessage.mockReset();
 	window.showErrorMessage.mockReset();
+	window.createOutputChannel.mockClear();
 	commands.registerCommand.mockClear();
 	commands.executeCommand.mockReset();
 	lm.registerLanguageModelChatProvider.mockClear();

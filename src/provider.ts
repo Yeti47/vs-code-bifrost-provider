@@ -3,11 +3,17 @@ import { BifrostApiError, fetchModels, streamChatCompletion } from './bifrostCli
 import { tokenToSignal } from './cancellation';
 import { getConnection, promptForConnection } from './config';
 import { BifrostDatasheet } from './datasheet';
+import { Diagnostics, formatFields } from './diagnostics';
 import { extractPlainText, toOpenAIMessages, toOpenAITools, toolModeToChoice } from './messageConversion';
 import { slugifyModelId } from './modelSlug';
+import { ReasoningAccumulator } from './reasoning';
+import { ReasoningCache } from './reasoningCache';
+import { createThinkingPart, isThinkingPart, isThinkingPartApiAvailable } from './thinking';
 import { BifrostModel, OpenAIChatCompletionRequest } from './types';
 
 const MODEL_CACHE_TTL_MS = 60_000;
+/** Global-state key holding the reasoning dialect learned per model id. */
+const DIALECT_STATE_KEY = 'bifrost.reasoningDialects';
 
 interface ModelCache {
 	connectionKey: string;
@@ -27,12 +33,19 @@ export class BifrostChatModelProvider implements vscode.LanguageModelChatProvide
 
 	private readonly datasheet: BifrostDatasheet;
 	private readonly disposables: vscode.Disposable[] = [];
+	private readonly reasoningCache = new ReasoningCache();
 
 	private cache: ModelCache | undefined;
 
+	private readonly diagnostics = new Diagnostics();
+
 	constructor(private readonly context: vscode.ExtensionContext) {
+		// A resumed conversation can contain reasoning from before a window reload. Without the
+		// remembered dialect we would treat those models as never having produced reasoning and stop
+		// replaying it, which is exactly when DeepSeek starts rejecting the request.
+		this.reasoningCache.hydrateDialects(context.globalState?.get(DIALECT_STATE_KEY) ?? {});
 		this.datasheet = new BifrostDatasheet(context);
-		this.disposables.push(this.datasheet, this.datasheet.onDidUpdate(() => this.invalidateCache()));
+		this.disposables.push(this.datasheet, this.diagnostics, this.datasheet.onDidUpdate(() => this.invalidateCache()));
 	}
 
 	dispose(): void {
@@ -96,21 +109,85 @@ export class BifrostChatModelProvider implements vscode.LanguageModelChatProvide
 			throw new Error('Bifrost is not configured. Run "Configure Bifrost Connection" first.');
 		}
 
+		const reasoningCache = this.reasoningCache.forModel(model.id);
 		const tools = toOpenAITools(options.tools);
+		const outgoing = toOpenAIMessages(messages, reasoningCache);
 		const request: OpenAIChatCompletionRequest = {
 			model: model.id,
-			messages: toOpenAIMessages(messages),
+			messages: outgoing,
 			stream: true,
 			tools,
 			tool_choice: tools ? toolModeToChoice(options.toolMode) : undefined
 		};
 
+		// `historyThinkingParts` tells us whether the chat client replays reasoning back to us; when it
+		// is 0 but `sentReasoning` is not, the fallback cache is the thing keeping DeepSeek happy.
+		const historyThinkingParts = messages.reduce(
+			(total, message) => total + message.content.filter((part) => isThinkingPart(part)).length,
+			0
+		);
+		this.diagnostics.log(`request ${formatFields({
+			model: model.id,
+			messages: outgoing.length,
+			historyThinkingParts,
+			// Must check every dialect: counting only `reasoning_content` reports zero for the
+			// OpenRouter-style gateways that populate `reasoning` instead.
+			sentReasoning: outgoing.filter(
+				(message) => message.reasoning_content || message.reasoning || message.reasoning_details
+			).length,
+			thinkingPartApi: isThinkingPartApiAvailable() ? 'available' : 'missing'
+		})}`);
+
 		const toolCallBuffers = new Map<number, ToolCallBuffer>();
+		const reasoning = new ReasoningAccumulator();
+		let reasoningChars = 0;
+		let thinkingPartsReported = 0;
+		let toolCallsReported = 0;
+		const finishReasons: string[] = [];
+		// Every field name the upstream actually sent on `delta`. Gateways disagree on what to call
+		// reasoning (`reasoning_content`, `reasoning`, `reasoning_details`, ...), so this is how we
+		// find out whether reasoning is absent or merely arriving under a name we do not read.
+		const deltaKeys = new Set<string>();
+
+		const flushToolCalls = (): void => {
+			if (toolCallBuffers.size === 0) {
+				return;
+			}
+			const calls = [...toolCallBuffers.values()];
+			toolCallBuffers.clear();
+			// Record before reporting: once these ids reach the client they can come back in history,
+			// and DeepSeek needs the matching reasoning replayed alongside them.
+			reasoningCache.remember(calls.map((call) => call.id), reasoning.snapshot());
+			for (const call of calls) {
+				progress.report(new vscode.LanguageModelToolCallPart(call.id, call.name, safeParseJson(call.arguments)));
+			}
+			toolCallsReported += calls.length;
+		};
 
 		for await (const chunk of streamChatCompletion(connection, request, tokenToSignal(token))) {
 			const choice = chunk.choices?.[0];
 			if (!choice) {
 				continue;
+			}
+
+			if (choice.finish_reason) {
+				finishReasons.push(choice.finish_reason);
+			}
+
+			for (const key of Object.keys(choice.delta ?? {})) {
+				deltaKeys.add(key);
+			}
+
+			const reasoningFragment = reasoning.add(choice.delta);
+			if (reasoningFragment) {
+				reasoningChars += reasoningFragment.length;
+				// VS Code merges consecutive thinking parts, so streaming fragments straight through
+				// keeps the reasoning UI live. Undefined on hosts without the thinking part API.
+				const part = createThinkingPart(reasoningFragment);
+				if (part) {
+					progress.report(part);
+					thinkingPartsReported++;
+				}
 			}
 
 			if (choice.delta?.content) {
@@ -132,12 +209,30 @@ export class BifrostChatModelProvider implements vscode.LanguageModelChatProvide
 			}
 
 			if (choice.finish_reason === 'tool_calls') {
-				for (const call of toolCallBuffers.values()) {
-					progress.report(new vscode.LanguageModelToolCallPart(call.id, call.name, safeParseJson(call.arguments)));
-				}
-				toolCallBuffers.clear();
+				flushToolCalls();
 			}
 		}
+
+		// Not every provider ends a tool-calling turn with `finish_reason: 'tool_calls'` — some send
+		// `stop`, or omit it entirely. Without this the buffered calls would be silently dropped.
+		flushToolCalls();
+
+		const captured = reasoning.snapshot();
+		if (captured) {
+			reasoningCache.noteDialect(captured.textField);
+			void this.context.globalState?.update(DIALECT_STATE_KEY, this.reasoningCache.exportDialects());
+		}
+
+		this.diagnostics.log(`response ${formatFields({
+			model: model.id,
+			reasoningChars,
+			reasoningField: captured?.textField ?? 'none',
+			reasoningDetails: reasoning.describeDetails(),
+			thinkingPartsReported,
+			toolCalls: toolCallsReported,
+			finishReasons: finishReasons.length > 0 ? finishReasons.join(',') : 'none',
+			deltaKeys: deltaKeys.size > 0 ? [...deltaKeys].sort().join(',') : 'none'
+		})}`);
 	}
 
 	async provideTokenCount(
