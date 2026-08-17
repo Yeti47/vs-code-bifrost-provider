@@ -3,6 +3,8 @@
 .github/**
 src/**
 test/**
+AGENTS.md
+*.vsix
 .gitignore
 tsconfig.json
 vitest.config.ts
