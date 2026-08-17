@@ -4,7 +4,8 @@ import {
 	extractPlainText,
 	toOpenAIMessages,
 	toOpenAITools,
-	toolModeToChoice
+	toolModeToChoice,
+	traceReasoningReplay
 } from '../../src/messageConversion';
 import { ReasoningCache } from '../../src/reasoningCache';
 import { __makeThinkingPart } from '../mocks/vscode';
@@ -259,6 +260,65 @@ describe('toOpenAIMessages', () => {
 		]);
 
 		expect(result.map((m) => m.role)).toEqual(['user', 'assistant']);
+	});
+});
+
+describe('traceReasoningReplay', () => {
+	it('counts assistant messages, tool calls, and thinking parts separately', () => {
+		const trace = traceReasoningReplay([
+			userMessage([new vscode.LanguageModelTextPart('hi')]),
+			assistantMessage([new vscode.LanguageModelToolCallPart('call-1', 'search', {})]),
+			assistantMessage([__makeThinkingPart('reasoning')])
+		]);
+
+		expect(trace.assistantMessages).toBe(2);
+		expect(trace.withToolCalls).toBe(1);
+		expect(trace.withThinkingParts).toBe(1);
+	});
+
+	it('reports a cache hit only when the historical tool call id is actually cached', () => {
+		const cache = new ReasoningCache().forModel('deepseek-v4-pro');
+		cache.remember(['call-1'], { text: 'x', textField: 'reasoning' });
+
+		const hit = traceReasoningReplay(
+			[assistantMessage([new vscode.LanguageModelToolCallPart('call-1', 'search', {})])],
+			cache
+		);
+		const miss = traceReasoningReplay(
+			[assistantMessage([new vscode.LanguageModelToolCallPart('call-unknown', 'search', {})])],
+			cache
+		);
+
+		expect(hit.cacheHits).toBe(1);
+		expect(miss.cacheHits).toBe(0);
+	});
+
+	it('samples the first historical tool call id verbatim', () => {
+		const trace = traceReasoningReplay([
+			assistantMessage([new vscode.LanguageModelToolCallPart('call-xyz', 'search', {})])
+		]);
+
+		expect(trace.sampleToolCallId).toBe('call-xyz');
+	});
+
+	it('reports dialectKnown from the supplied cache, and false when none is supplied', () => {
+		const cache = new ReasoningCache().forModel('deepseek-v4-pro');
+		cache.noteDialect('reasoning');
+
+		expect(traceReasoningReplay([], cache).dialectKnown).toBe(true);
+		expect(traceReasoningReplay([]).dialectKnown).toBe(false);
+	});
+
+	it('reports zeroes for a history with no assistant activity', () => {
+		const trace = traceReasoningReplay([userMessage([new vscode.LanguageModelTextPart('hi')])]);
+
+		expect(trace).toMatchObject({
+			assistantMessages: 0,
+			withToolCalls: 0,
+			withThinkingParts: 0,
+			cacheHits: 0
+		});
+		expect(trace.sampleToolCallId).toBeUndefined();
 	});
 });
 

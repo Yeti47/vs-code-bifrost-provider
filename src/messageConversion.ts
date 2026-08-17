@@ -134,3 +134,65 @@ export function extractPlainText(message: vscode.LanguageModelChatRequestMessage
 		.map((part) => (part instanceof vscode.LanguageModelTextPart ? part.value : ''))
 		.join('');
 }
+
+/**
+ * Diagnostic-only trace of why (or why not) reasoning got attached during conversion, mirroring
+ * `convertAssistantMessage`'s decision without duplicating its output. Exists to answer, from a real
+ * session, why `sentReasoning` can stay at 0 even once `historyThinkingParts` is well above zero —
+ * something neither our synthetic tests nor reading the code has been able to explain.
+ */
+export interface ReasoningReplayTrace {
+	assistantMessages: number;
+	/** Assistant messages whose content included at least one LanguageModelToolCallPart. */
+	withToolCalls: number;
+	/** Assistant messages whose content included at least one recognized thinking part. */
+	withThinkingParts: number;
+	/** Of `withToolCalls`, how many had a tool call id the cache actually recognized. */
+	cacheHits: number;
+	dialectKnown: boolean;
+	/** First historical tool call id seen, to compare byte-for-byte against an id we assigned. */
+	sampleToolCallId?: string;
+}
+
+export function traceReasoningReplay(
+	messages: readonly vscode.LanguageModelChatRequestMessage[],
+	reasoning?: ModelReasoningCache
+): ReasoningReplayTrace {
+	const trace: ReasoningReplayTrace = {
+		assistantMessages: 0,
+		withToolCalls: 0,
+		withThinkingParts: 0,
+		cacheHits: 0,
+		dialectKnown: reasoning?.dialect() !== undefined
+	};
+
+	for (const message of messages) {
+		if (message.role !== vscode.LanguageModelChatMessageRole.Assistant) {
+			continue;
+		}
+		trace.assistantMessages++;
+
+		const toolCallIds: string[] = [];
+		let hasThinking = false;
+		for (const part of message.content) {
+			if (part instanceof vscode.LanguageModelToolCallPart) {
+				toolCallIds.push(part.callId);
+			} else if (isThinkingPart(part)) {
+				hasThinking = true;
+			}
+		}
+
+		if (toolCallIds.length > 0) {
+			trace.withToolCalls++;
+			trace.sampleToolCallId ??= toolCallIds[0];
+			if (reasoning?.lookup(toolCallIds)) {
+				trace.cacheHits++;
+			}
+		}
+		if (hasThinking) {
+			trace.withThinkingParts++;
+		}
+	}
+
+	return trace;
+}

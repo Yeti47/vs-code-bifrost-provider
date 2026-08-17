@@ -23,6 +23,16 @@ import { CapturedReasoning, ReasoningTextField } from './reasoning';
 const DEFAULT_MAX_ENTRIES = 200;
 /** ~4 MB of UTF-16, comfortably below anything that would matter inside the extension host. */
 const DEFAULT_MAX_CHARS = 2_000_000;
+/**
+ * How much of the cache survives a reload. Deliberately much smaller than the runtime budget above:
+ * this gets written to `globalState` after nearly every turn (the same fire-and-forget pattern
+ * dialects already use), so it needs to stay cheap to serialize repeatedly rather than mirror the
+ * full in-memory cache. It only needs to cover the handful of turns right at the reload boundary —
+ * older gaps need a fresh conversation regardless, since nothing can reconstruct reasoning that was
+ * never captured in the first place.
+ */
+const PERSIST_MAX_ENTRIES = 20;
+const PERSIST_MAX_CHARS = 200_000;
 
 /** A view of the cache bound to one model, so callers cannot mix reasoning across models. */
 export interface ModelReasoningCache {
@@ -82,6 +92,35 @@ export class ReasoningCache {
 		return Object.fromEntries(this.dialects);
 	}
 
+	/**
+	 * A small, most-recent-first slice of the cache, sized for `globalState` rather than for runtime
+	 * use. Restore with {@link hydrateEntries}.
+	 */
+	exportEntries(): Record<string, CapturedReasoning> {
+		const recent = [...this.entries.entries()].reverse();
+		const out: Record<string, CapturedReasoning> = {};
+		let chars = 0;
+		for (const [key, reasoning] of recent) {
+			if (Object.keys(out).length >= PERSIST_MAX_ENTRIES) {
+				break;
+			}
+			const size = this.sizes.get(key) ?? measure(reasoning);
+			if (chars + size > PERSIST_MAX_CHARS && Object.keys(out).length > 0) {
+				break;
+			}
+			out[key] = reasoning;
+			chars += size;
+		}
+		return out;
+	}
+
+	/** Restores entries saved by {@link exportEntries}, oldest-first so recency ordering is preserved. */
+	hydrateEntries(saved: Readonly<Record<string, CapturedReasoning>>): void {
+		for (const [key, reasoning] of Object.entries(saved ?? {}).reverse()) {
+			this.setEntry(key, reasoning);
+		}
+	}
+
 	/** Characters currently retained, counting shared payloads once per referencing key. */
 	get charCount(): number {
 		return this.totalChars;
@@ -98,21 +137,31 @@ export class ReasoningCache {
 		if (!reasoning) {
 			return;
 		}
-		const size = measure(reasoning);
 		for (const toolCallId of toolCallIds) {
 			if (!toolCallId) {
 				continue;
 			}
-			const key = cacheKey(modelId, toolCallId);
-			// Re-insert so refreshed entries count as most recently used.
-			this.drop(key);
-			this.entries.set(key, reasoning);
-			this.sizes.set(key, size);
-			this.totalChars += size;
+			this.setEntry(cacheKey(modelId, toolCallId), reasoning);
 		}
-		// Every tool call in a turn shares one payload object but is charged in full, so the budget
-		// over-counts rather than under-counts — it evicts early, never late. Always keep the newest
-		// entry, even if it alone exceeds the budget.
+	}
+
+	/**
+	 * Inserts or refreshes one raw cache key, then enforces the runtime budget. Shared by `remember`
+	 * (raw key built from a model id + tool call id) and `hydrateEntries` (raw key restored verbatim
+	 * from a previous session, already in that same combined form).
+	 */
+	private setEntry(key: string, reasoning: CapturedReasoning): void {
+		// Always measure the incoming payload, never reuse a stored size: a refresh can carry a
+		// different-sized `reasoning` than whatever this key held before.
+		const size = measure(reasoning);
+		// Re-insert so refreshed entries count as most recently used.
+		this.drop(key);
+		this.entries.set(key, reasoning);
+		this.sizes.set(key, size);
+		this.totalChars += size;
+		// Charging every reference to a shared payload in full means the budget over-counts rather
+		// than under-counts — it evicts early, never late. Always keep the newest entry, even if it
+		// alone exceeds the budget.
 		while ((this.entries.size > this.maxEntries || this.totalChars > this.maxChars) && this.entries.size > 1) {
 			const oldest = this.entries.keys().next();
 			if (oldest.done) {

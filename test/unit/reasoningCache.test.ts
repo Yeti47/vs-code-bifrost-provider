@@ -148,6 +148,101 @@ describe('ReasoningCache', () => {
 		expect(cache.forModel('a-model').dialect()).toBeUndefined();
 	});
 
+	it('round-trips entries so a reload does not lose reasoning from the last few turns', () => {
+		const before = new ReasoningCache();
+		before.forModel('opencode-go/deepseek-v4-flash').remember(['call-1'], { text: 'x', textField: 'reasoning' });
+
+		const after = new ReasoningCache();
+		after.hydrateEntries(before.exportEntries());
+
+		expect(after.forModel('opencode-go/deepseek-v4-flash').lookup(['call-1'])?.text).toBe('x');
+	});
+
+	it('exports only a small, most-recent slice, not the full runtime cache', () => {
+		const cache = new ReasoningCache();
+		const model = cache.forModel('deepseek-v4-pro');
+		for (let i = 0; i < 40; i++) {
+			model.remember([`call-${i}`], { text: `turn-${i}`, textField: 'reasoning' });
+		}
+
+		const exported = cache.exportEntries();
+
+		expect(Object.keys(exported).length).toBeLessThan(cache.size);
+		expect(Object.keys(exported).length).toBeLessThanOrEqual(20);
+		// The most recent turn must be the one preserved, not an arbitrary or oldest one.
+		const after = new ReasoningCache();
+		after.hydrateEntries(exported);
+		expect(after.forModel('deepseek-v4-pro').lookup(['call-39'])?.text).toBe('turn-39');
+		expect(after.forModel('deepseek-v4-pro').lookup(['call-0'])).toBeUndefined();
+	});
+
+	it('caps the persisted export by characters as well as by count', () => {
+		const cache = new ReasoningCache();
+		const model = cache.forModel('deepseek-v4-pro');
+		for (let i = 0; i < 10; i++) {
+			model.remember([`call-${i}`], { text: 'x'.repeat(50_000), textField: 'reasoning' });
+		}
+
+		const exported = cache.exportEntries();
+		const totalExportedChars = Object.values(exported).reduce((sum, r) => sum + r.text.length, 0);
+
+		expect(totalExportedChars).toBeLessThanOrEqual(200_000);
+	});
+
+	it('still enforces the runtime budget on hydrated entries', () => {
+		const cache = new ReasoningCache(2);
+
+		// hydrateEntries expects most-recent-first input, matching exportEntries' actual output order.
+		// Keys join model id and tool call id with a NUL separator, matching cacheKey's own format.
+		cache.hydrateEntries({
+			[`model\u0000call-3`]: { text: 'third', textField: 'reasoning' },
+			[`model\u0000call-2`]: { text: 'second', textField: 'reasoning' },
+			[`model\u0000call-1`]: { text: 'first', textField: 'reasoning' }
+		});
+
+		expect(cache.size).toBeLessThanOrEqual(2);
+		expect(cache.forModel('model').lookup(['call-3'])?.text).toBe('third');
+	});
+
+	it('tolerates an empty or missing persisted export', () => {
+		const cache = new ReasoningCache();
+
+		cache.hydrateEntries({});
+		cache.hydrateEntries(undefined as never);
+
+		expect(cache.size).toBe(0);
+	});
+
+	it('never evicts the entry just written, across a long realistic session', () => {
+		// Reproduces the shape of a real 400+ message DeepSeek session: default budget (200 entries /
+		// 2M chars), turns 100–20,000 reasoningChars (doubled by reasoning_details duplication, per
+		// the "counts text nested inside reasoning_details" test above), and the occasional
+		// multi-tool-call turn — to check the suspicion that the cache "spills over" and loses a
+		// turn's own reasoning before the very next request can look it up.
+		const cache = new ReasoningCache();
+		const model = cache.forModel('opencode-go/deepseek-v4-pro');
+
+		for (let turn = 0; turn < 500; turn++) {
+			const reasoningChars = 100 + ((turn * 137) % 19900); // spread across the observed range
+			const toolCallIds = turn % 7 === 0 ? [`call-${turn}-a`, `call-${turn}-b`] : [`call-${turn}`];
+			const text = 'x'.repeat(reasoningChars);
+
+			model.remember(toolCallIds, {
+				text,
+				textField: 'reasoning',
+				details: [{ type: 'reasoning.text', index: 0, text }]
+			});
+
+			// The critical assertion: whatever was *just* written must be immediately readable, as it
+			// would be by the very next request in a real conversation.
+			for (const id of toolCallIds) {
+				expect(model.lookup([id])?.text).toHaveLength(reasoningChars);
+			}
+		}
+
+		expect(cache.size).toBeLessThanOrEqual(200);
+	});
+
 	it('treats a refreshed entry as most recently used', () => {
 		const cache = new ReasoningCache(2);
 		const model = cache.forModel('deepseek-v4-pro');

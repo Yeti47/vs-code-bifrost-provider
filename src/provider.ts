@@ -4,7 +4,7 @@ import { tokenToSignal } from './cancellation';
 import { getConnection, promptForConnection } from './config';
 import { BifrostDatasheet } from './datasheet';
 import { Diagnostics, formatFields } from './diagnostics';
-import { extractPlainText, toOpenAIMessages, toOpenAITools, toolModeToChoice } from './messageConversion';
+import { extractPlainText, toOpenAIMessages, toOpenAITools, toolModeToChoice, traceReasoningReplay } from './messageConversion';
 import { slugifyModelId } from './modelSlug';
 import { ReasoningAccumulator } from './reasoning';
 import { ReasoningCache } from './reasoningCache';
@@ -14,6 +14,13 @@ import { BifrostModel, OpenAIChatCompletionRequest } from './types';
 const MODEL_CACHE_TTL_MS = 60_000;
 /** Global-state key holding the reasoning dialect learned per model id. */
 const DIALECT_STATE_KEY = 'bifrost.reasoningDialects';
+/**
+ * Global-state key holding a small, most-recent slice of captured reasoning. Without this, a reload
+ * mid-conversation wipes the in-memory cache but the chat client still replays every earlier
+ * tool-call turn on the next request — any of those turns now missing reasoning can be enough for
+ * DeepSeek to reject the request, so surviving a reload matters, not just surviving one process.
+ */
+const ENTRIES_STATE_KEY = 'bifrost.reasoningEntries';
 
 interface ModelCache {
 	connectionKey: string;
@@ -44,6 +51,7 @@ export class BifrostChatModelProvider implements vscode.LanguageModelChatProvide
 		// remembered dialect we would treat those models as never having produced reasoning and stop
 		// replaying it, which is exactly when DeepSeek starts rejecting the request.
 		this.reasoningCache.hydrateDialects(context.globalState?.get(DIALECT_STATE_KEY) ?? {});
+		this.reasoningCache.hydrateEntries(context.globalState?.get(ENTRIES_STATE_KEY) ?? {});
 		this.datasheet = new BifrostDatasheet(context);
 		this.disposables.push(this.datasheet, this.diagnostics, this.datasheet.onDidUpdate(() => this.invalidateCache()));
 	}
@@ -126,6 +134,10 @@ export class BifrostChatModelProvider implements vscode.LanguageModelChatProvide
 			(total, message) => total + message.content.filter((part) => isThinkingPart(part)).length,
 			0
 		);
+		// `sentReasoning` alone was not enough to explain a live report of it staying at 0 even with
+		// historyThinkingParts > 0: this traces the two paths (cache-by-id, dialect-gated replay)
+		// individually so a real log can show which one is failing and why.
+		const trace = traceReasoningReplay(messages, reasoningCache);
 		this.diagnostics.log(`request ${formatFields({
 			model: model.id,
 			messages: outgoing.length,
@@ -135,7 +147,13 @@ export class BifrostChatModelProvider implements vscode.LanguageModelChatProvide
 			sentReasoning: outgoing.filter(
 				(message) => message.reasoning_content || message.reasoning || message.reasoning_details
 			).length,
-			thinkingPartApi: isThinkingPartApiAvailable() ? 'available' : 'missing'
+			thinkingPartApi: isThinkingPartApiAvailable() ? 'available' : 'missing',
+			assistantMsgs: trace.assistantMessages,
+			withToolCalls: trace.withToolCalls,
+			withThinkingParts: trace.withThinkingParts,
+			cacheHits: trace.cacheHits,
+			dialectKnown: trace.dialectKnown,
+			historyToolCallId: trace.sampleToolCallId ?? 'none'
 		})}`);
 
 		const toolCallBuffers = new Map<number, ToolCallBuffer>();
@@ -143,6 +161,7 @@ export class BifrostChatModelProvider implements vscode.LanguageModelChatProvide
 		let reasoningChars = 0;
 		let thinkingPartsReported = 0;
 		let toolCallsReported = 0;
+		let sampleAssignedToolCallId: string | undefined;
 		const finishReasons: string[] = [];
 		// Every field name the upstream actually sent on `delta`. Gateways disagree on what to call
 		// reasoning (`reasoning_content`, `reasoning`, `reasoning_details`, ...), so this is how we
@@ -155,6 +174,7 @@ export class BifrostChatModelProvider implements vscode.LanguageModelChatProvide
 			}
 			const calls = [...toolCallBuffers.values()];
 			toolCallBuffers.clear();
+			sampleAssignedToolCallId ??= calls[0]?.id;
 			// Record before reporting: once these ids reach the client they can come back in history,
 			// and DeepSeek needs the matching reasoning replayed alongside them.
 			reasoningCache.remember(calls.map((call) => call.id), reasoning.snapshot());
@@ -221,6 +241,7 @@ export class BifrostChatModelProvider implements vscode.LanguageModelChatProvide
 		if (captured) {
 			reasoningCache.noteDialect(captured.textField);
 			void this.context.globalState?.update(DIALECT_STATE_KEY, this.reasoningCache.exportDialects());
+			void this.context.globalState?.update(ENTRIES_STATE_KEY, this.reasoningCache.exportEntries());
 		}
 
 		this.diagnostics.log(`response ${formatFields({
@@ -230,6 +251,10 @@ export class BifrostChatModelProvider implements vscode.LanguageModelChatProvide
 			reasoningDetails: reasoning.describeDetails(),
 			thinkingPartsReported,
 			toolCalls: toolCallsReported,
+			// Compare against `historyToolCallId` on a later request line for the same conversation:
+			// if they never match, the chat client is not preserving tool-call ids through history,
+			// which would explain the id-keyed cache never hitting.
+			assignedToolCallId: sampleAssignedToolCallId ?? 'none',
 			finishReasons: finishReasons.length > 0 ? finishReasons.join(',') : 'none',
 			deltaKeys: deltaKeys.size > 0 ? [...deltaKeys].sort().join(',') : 'none'
 		})}`);
