@@ -2,7 +2,7 @@
 	"name": "bifrost-copilot-provider",
 	"displayName": "Bifrost Copilot Provider",
 	"description": "Copilot Chat model provider for a self-hosted Bifrost LLM gateway, with automatic model and context-size discovery.",
-	"version": "0.3.3",
+	"version": "0.2.2",
 	"publisher": "Yeti47",
 	"license": "MIT",
 	"repository": {
@@ -49,14 +49,6 @@
 					},
 					"default": {},
 					"description": "Some Bifrost providers (e.g. ollama, custom OpenAI-compatible providers) report no context-size metadata at all, so a conservative default is used instead. Use this to correct it. Keys can be an exact model id (e.g. \"ollama/llama3.1\") or a provider prefix (e.g. \"ollama\") used when no exact key matches. Values are the model's max input tokens."
-				},
-				"bifrost.routingTargets": {
-					"type": "object",
-					"additionalProperties": {
-						"type": "number"
-					},
-					"default": {},
-					"description": "Workaround for Bifrost's weighted Routing Rules picking a target independently on every request, with no session affinity (see github.com/maximhq/bifrost/issues/5409) — this can break providers that track conversation state per key, e.g. DeepSeek thinking-mode continuity. When set, every request in a conversation is tagged with the same one of these labels (sent as the X-Bifrost-Route header), chosen deterministically so the same conversation always lands on the same label; the relative numbers set their weight. Configure one exact-match Header routing rule per label in Bifrost (condition: X-Bifrost-Route equals the label), each pointing at a different provider key, in place of a single weighted rule. Leave empty (the default) to send nothing and disable this."
 				}
 			}
 		}
