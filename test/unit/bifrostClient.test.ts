@@ -226,4 +226,22 @@ describe('streamChatCompletion', () => {
 			BifrostApiError
 		);
 	});
+
+	it('sends an X-Bifrost-Route header when a routing target is given', async () => {
+		vi.mocked(fetch).mockResolvedValueOnce(sseResponse(['data: [DONE]\n']));
+
+		await collect(streamChatCompletion(connection, request, new AbortController().signal, 'a'));
+
+		const [, options] = vi.mocked(fetch).mock.calls[0];
+		expect((options as RequestInit).headers).toMatchObject({ 'X-Bifrost-Route': 'a' });
+	});
+
+	it('omits the routing header entirely when no routing target is given', async () => {
+		vi.mocked(fetch).mockResolvedValueOnce(sseResponse(['data: [DONE]\n']));
+
+		await collect(streamChatCompletion(connection, request, new AbortController().signal));
+
+		const [, options] = vi.mocked(fetch).mock.calls[0];
+		expect((options as RequestInit).headers).not.toHaveProperty('X-Bifrost-Route');
+	});
 });

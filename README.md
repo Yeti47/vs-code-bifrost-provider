@@ -30,6 +30,20 @@ Not every Bifrost provider reports `context_length`/`max_input_tokens` (its Open
 4. **`bifrost.contextSizeOverrides` setting** — your own correction, keyed by exact model id (e.g. `"ollama/llama3.1"`) or provider prefix (e.g. `"ollama"`), value in tokens.
 5. **A conservative default** (4096) if none of the above resolve — the model's tooltip in the picker will say so explicitly.
 
+### Sticky routing across weighted keys
+
+Bifrost's weighted Routing Rules pick a target independently on every request — there's no session affinity, so a single conversation can hop between keys mid-stream ([maximhq/bifrost#5409](https://github.com/maximhq/bifrost/issues/5409), still open as of v1.6.11). That's harmless for stateless providers, but it can break ones that track conversation state per key — e.g. DeepSeek's requirement that thinking-mode reasoning be replayed back on every subsequent turn, which a mid-conversation key switch can silently violate.
+
+The `bifrost.routingTargets` setting works around this from the client:
+
+```json
+"bifrost.routingTargets": { "a": 1, "b": 1 }
+```
+
+Every request in a conversation is tagged with the same one of these labels, sent as the `X-Bifrost-Route` header — chosen deterministically from the conversation's first message, so the same conversation always picks the same label. The numbers are relative weights (equal here; use e.g. `{"a": 2, "b": 1}` for a 2:1 split).
+
+To use it, replace your weighted Routing Rule with one exact-match rule per label — condition `X-Bifrost-Route == "a"` routing to one key, `== "b"` to the other, and so on. Leave the setting empty (the default) to send nothing and opt out entirely.
+
 ## Development
 
 ```sh

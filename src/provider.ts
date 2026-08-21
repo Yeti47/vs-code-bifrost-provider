@@ -8,6 +8,7 @@ import { extractPlainText, toOpenAIMessages, toOpenAITools, toolModeToChoice, tr
 import { slugifyModelId } from './modelSlug';
 import { ReasoningAccumulator } from './reasoning';
 import { ReasoningCache } from './reasoningCache';
+import { pickRoutingTarget } from './routing';
 import { createThinkingPart, isThinkingPart, isThinkingPartApiAvailable } from './thinking';
 import { BifrostModel, OpenAIChatCompletionRequest } from './types';
 
@@ -128,6 +129,12 @@ export class BifrostChatModelProvider implements vscode.LanguageModelChatProvide
 			tool_choice: tools ? toolModeToChoice(options.toolMode) : undefined
 		};
 
+		// Derived from the first message, which stays constant for a conversation's whole lifetime,
+		// so every turn of the same conversation picks the same routing target. See routing.ts.
+		const routingTargets = vscode.workspace.getConfiguration('bifrost').get<Record<string, number>>('routingTargets', {});
+		const routingIdentity = messages.length > 0 ? extractPlainText(messages[0]) : '';
+		const routingTarget = pickRoutingTarget(routingIdentity, routingTargets);
+
 		// `historyThinkingParts` tells us whether the chat client replays reasoning back to us; when it
 		// is 0 but `sentReasoning` is not, the fallback cache is the thing keeping DeepSeek happy.
 		const historyThinkingParts = messages.reduce(
@@ -153,7 +160,8 @@ export class BifrostChatModelProvider implements vscode.LanguageModelChatProvide
 			withThinkingParts: trace.withThinkingParts,
 			cacheHits: trace.cacheHits,
 			dialectKnown: trace.dialectKnown,
-			historyToolCallId: trace.sampleToolCallId ?? 'none'
+			historyToolCallId: trace.sampleToolCallId ?? 'none',
+			routingTarget: routingTarget ?? 'none'
 		})}`);
 
 		const toolCallBuffers = new Map<number, ToolCallBuffer>();
@@ -184,7 +192,7 @@ export class BifrostChatModelProvider implements vscode.LanguageModelChatProvide
 			toolCallsReported += calls.length;
 		};
 
-		for await (const chunk of streamChatCompletion(connection, request, tokenToSignal(token))) {
+		for await (const chunk of streamChatCompletion(connection, request, tokenToSignal(token), routingTarget)) {
 			const choice = chunk.choices?.[0];
 			if (!choice) {
 				continue;

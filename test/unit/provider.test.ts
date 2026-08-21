@@ -569,6 +569,66 @@ describe('BifrostChatModelProvider.provideLanguageModelChatResponse', () => {
 		expect(requests[1]).toContain('thinkingPartApi=available');
 	});
 
+	it('sends no X-Bifrost-Route header when routingTargets is unconfigured', async () => {
+		vi.mocked(streamChatCompletion).mockReturnValueOnce(streamOf([]));
+		const provider = new BifrostChatModelProvider(configureConnection());
+		const progress = { report: vi.fn() };
+		const history = [
+			{
+				role: vscode.LanguageModelChatMessageRole.User,
+				content: [new vscode.LanguageModelTextPart('hello')]
+			}
+		] as unknown as readonly import('vscode').LanguageModelChatRequestMessage[];
+
+		await provider.provideLanguageModelChatResponse(modelInfo, history, options, progress as never, fakeToken());
+
+		expect(vi.mocked(streamChatCompletion).mock.calls[0][3]).toBeUndefined();
+	});
+
+	it('picks a routing target from configured weights and keeps it stable across turns', async () => {
+		__setConfigValue('bifrost', 'routingTargets', { a: 1, b: 1 });
+		vi.mocked(streamChatCompletion).mockReturnValue(streamOf([]));
+		const provider = new BifrostChatModelProvider(configureConnection());
+		const progress = { report: vi.fn() };
+		const history = [
+			{
+				role: vscode.LanguageModelChatMessageRole.User,
+				content: [new vscode.LanguageModelTextPart('the same first message every turn')]
+			}
+		] as unknown as readonly import('vscode').LanguageModelChatRequestMessage[];
+
+		await provider.provideLanguageModelChatResponse(modelInfo, history, options, progress as never, fakeToken());
+		await provider.provideLanguageModelChatResponse(modelInfo, history, options, progress as never, fakeToken());
+
+		const first = vi.mocked(streamChatCompletion).mock.calls[0][3];
+		const second = vi.mocked(streamChatCompletion).mock.calls[1][3];
+		expect(first).toBeDefined();
+		expect(['a', 'b']).toContain(first);
+		expect(second).toBe(first);
+	});
+
+	it('derives the routing target from the first message, not a constant', async () => {
+		// Any two individual conversations could legally collide onto the same label (that's just a
+		// hash collision, not a bug), so this checks the wiring by sampling many distinct openers:
+		// if the identity were accidentally constant — e.g. always hashing "" — every one of them
+		// would land on the same label instead of spreading across at least a couple.
+		__setConfigValue('bifrost', 'routingTargets', { a: 1, b: 1, c: 1, d: 1, e: 1 });
+		vi.mocked(streamChatCompletion).mockReturnValue(streamOf([]));
+		const provider = new BifrostChatModelProvider(configureConnection());
+		const progress = { report: vi.fn() };
+
+		const seenTargets = new Set<unknown>();
+		for (let i = 0; i < 20; i++) {
+			const history = [
+				{ role: vscode.LanguageModelChatMessageRole.User, content: [new vscode.LanguageModelTextPart(`opener number ${i}`)] }
+			] as unknown as readonly import('vscode').LanguageModelChatRequestMessage[];
+			await provider.provideLanguageModelChatResponse(modelInfo, history, options, progress as never, fakeToken());
+			seenTargets.add(vi.mocked(streamChatCompletion).mock.calls[i][3]);
+		}
+
+		expect(seenTargets.size).toBeGreaterThan(1);
+	});
+
 	it('never replays one model\'s reasoning to a different model', async () => {
 		vi.mocked(streamChatCompletion).mockReturnValueOnce(
 			streamOf([

@@ -48,13 +48,17 @@ export async function fetchModels(connection: BifrostConnection, signal: AbortSi
 export async function* streamChatCompletion(
 	connection: BifrostConnection,
 	request: OpenAIChatCompletionRequest,
-	signal: AbortSignal
+	signal: AbortSignal,
+	routingTarget?: string
 ): AsyncGenerator<OpenAIStreamChunk, void, undefined> {
 	const res = await fetch(`${connection.baseUrl}/v1/chat/completions`, {
 		method: 'POST',
 		headers: {
 			'Content-Type': 'application/json',
-			Authorization: `Bearer ${connection.apiKey}`
+			Authorization: `Bearer ${connection.apiKey}`,
+			// Lets a Bifrost Routing Rule pin this conversation to one target via an exact header
+			// match, working around weighted Routing Rules having no session affinity. See routing.ts.
+			...(routingTarget ? { 'X-Bifrost-Route': routingTarget } : {})
 		},
 		body: JSON.stringify(request),
 		signal
