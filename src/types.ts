@@ -80,6 +80,14 @@ export interface OpenAIStreamChunk {
 	choices?: Array<{
 		delta?: {
 			content?: string | null;
+			/**
+			 * Thinking-mode reasoning, display-only. Field name varies by gateway: DeepSeek's own API
+			 * streams `reasoning_content`; OpenRouter-style gateways stream `reasoning`. Read once and
+			 * shown as a thinking part — never replayed back to the API, so the two are not otherwise
+			 * distinguished.
+			 */
+			reasoning_content?: string | null;
+			reasoning?: string | null;
 			tool_calls?: OpenAIStreamDeltaToolCall[];
 		};
 		finish_reason?: string | null;

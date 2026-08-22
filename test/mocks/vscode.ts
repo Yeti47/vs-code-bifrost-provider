@@ -98,6 +98,22 @@ export class LanguageModelDataPart {
 	constructor(public data: Uint8Array, public mimeType: string) { }
 }
 
+class LanguageModelThinkingPartImpl {
+	constructor(public value: string) { }
+}
+
+/**
+ * Exported via `let` so tests can simulate a host without the (still proposed) thinking part API —
+ * ES module live bindings make the change visible through the `import * as vscode` namespace that
+ * `src/thinking.ts` reads. See `__setThinkingPartAvailable`.
+ */
+export let LanguageModelThinkingPart: typeof LanguageModelThinkingPartImpl | undefined =
+	LanguageModelThinkingPartImpl;
+
+export function __setThinkingPartAvailable(available: boolean): void {
+	LanguageModelThinkingPart = available ? LanguageModelThinkingPartImpl : undefined;
+}
+
 export class Uri {
 	private constructor(public readonly fsPath: string) { }
 	static file(path: string): Uri {
@@ -180,6 +196,7 @@ export function __fireConfigurationChange(affectedSection: string): void {
 export function __resetMockVscodeState(): void {
 	configValues.clear();
 	fsFiles.clear();
+	__setThinkingPartAvailable(true);
 	window.showInputBox.mockReset();
 	window.showInformationMessage.mockReset();
 	window.showErrorMessage.mockReset();

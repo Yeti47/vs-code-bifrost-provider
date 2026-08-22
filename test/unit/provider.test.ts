@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import * as vscode from 'vscode';
-import { __resetMockVscodeState, __setConfigValue } from '../mocks/vscode';
+import { __resetMockVscodeState, __setConfigValue, __setThinkingPartAvailable } from '../mocks/vscode';
 
 vi.mock('../../src/bifrostClient', async (importOriginal) => {
 	const actual = await importOriginal<typeof import('../../src/bifrostClient')>();
@@ -253,6 +253,67 @@ describe('BifrostChatModelProvider.provideLanguageModelChatResponse', () => {
 		expect(reported[0]).toBeInstanceOf(vscode.LanguageModelTextPart);
 		expect((reported[0] as vscode.LanguageModelTextPart).value).toBe('Hel');
 		expect((reported[1] as vscode.LanguageModelTextPart).value).toBe('lo');
+	});
+
+	it('reports reasoning_content deltas as thinking parts', async () => {
+		vi.mocked(streamChatCompletion).mockReturnValueOnce(
+			streamOf([
+				{ choices: [{ delta: { reasoning_content: 'let me ' } }] },
+				{ choices: [{ delta: { reasoning_content: 'think' } }] },
+				{ choices: [{ delta: { content: 'answer' } }] }
+			])
+		);
+		const provider = new BifrostChatModelProvider(configureConnection());
+		const progress = { report: vi.fn() };
+
+		await provider.provideLanguageModelChatResponse(modelInfo, [], options, progress as never, fakeToken());
+
+		const reported = progress.report.mock.calls.map((c) => c[0]);
+		expect(reported).toHaveLength(3);
+		expect(reported[0]).toBeInstanceOf(vscode.LanguageModelThinkingPart!);
+		expect((reported[0] as unknown as { value: string }).value).toBe('let me ');
+		expect((reported[1] as unknown as { value: string }).value).toBe('think');
+		expect(reported[2]).toBeInstanceOf(vscode.LanguageModelTextPart);
+	});
+
+	it('reports the OpenRouter-dialect "reasoning" field as thinking parts too', async () => {
+		vi.mocked(streamChatCompletion).mockReturnValueOnce(
+			streamOf([{ choices: [{ delta: { reasoning: 'thinking' } }] }])
+		);
+		const provider = new BifrostChatModelProvider(configureConnection());
+		const progress = { report: vi.fn() };
+
+		await provider.provideLanguageModelChatResponse(modelInfo, [], options, progress as never, fakeToken());
+
+		expect(progress.report).toHaveBeenCalledTimes(1);
+		expect((progress.report.mock.calls[0][0] as unknown as { value: string }).value).toBe('thinking');
+	});
+
+	it('prefers reasoning_content over reasoning when a chunk has both', async () => {
+		vi.mocked(streamChatCompletion).mockReturnValueOnce(
+			streamOf([{ choices: [{ delta: { reasoning_content: 'native', reasoning: 'openrouter-style' } }] }])
+		);
+		const provider = new BifrostChatModelProvider(configureConnection());
+		const progress = { report: vi.fn() };
+
+		await provider.provideLanguageModelChatResponse(modelInfo, [], options, progress as never, fakeToken());
+
+		expect((progress.report.mock.calls[0][0] as unknown as { value: string }).value).toBe('native');
+	});
+
+	it('still streams content when the host has no thinking part API', async () => {
+		vi.mocked(streamChatCompletion).mockReturnValueOnce(
+			streamOf([{ choices: [{ delta: { reasoning_content: 'dropped' } }] }, { choices: [{ delta: { content: 'answer' } }] }])
+		);
+		__setThinkingPartAvailable(false);
+		const provider = new BifrostChatModelProvider(configureConnection());
+		const progress = { report: vi.fn() };
+
+		await provider.provideLanguageModelChatResponse(modelInfo, [], options, progress as never, fakeToken());
+
+		const reported = progress.report.mock.calls.map((c) => c[0]);
+		expect(reported).toHaveLength(1);
+		expect(reported[0]).toBeInstanceOf(vscode.LanguageModelTextPart);
 	});
 
 	it('accumulates tool call deltas across chunks and emits one tool call part on finish', async () => {

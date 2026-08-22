@@ -5,6 +5,7 @@ import { getConnection, promptForConnection } from './config';
 import { BifrostDatasheet } from './datasheet';
 import { extractPlainText, toOpenAIMessages, toOpenAITools, toolModeToChoice } from './messageConversion';
 import { slugifyModelId } from './modelSlug';
+import { createThinkingPart } from './thinking';
 import { BifrostModel, OpenAIChatCompletionRequest } from './types';
 
 const MODEL_CACHE_TTL_MS = 60_000;
@@ -111,6 +112,15 @@ export class BifrostChatModelProvider implements vscode.LanguageModelChatProvide
 			const choice = chunk.choices?.[0];
 			if (!choice) {
 				continue;
+			}
+
+			const reasoning = choice.delta?.reasoning_content || choice.delta?.reasoning;
+			if (reasoning) {
+				// Undefined on hosts without the (still proposed) thinking part API; harmless to skip.
+				const part = createThinkingPart(reasoning);
+				if (part) {
+					progress.report(part);
+				}
 			}
 
 			if (choice.delta?.content) {

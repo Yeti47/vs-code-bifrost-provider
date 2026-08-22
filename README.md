@@ -19,6 +19,7 @@ The virtual key is stored in VS Code's encrypted Secret Storage, never in settin
 - Streaming chat responses.
 - Tool calling (for Copilot agent/edit mode).
 - Image input for vision-capable models.
+- Thinking-mode reasoning shown live as it streams, for gateways that send it (`reasoning_content` or `reasoning` on the delta). Display only — nothing is replayed back to the API on later turns, so this doesn't help with providers (e.g. DeepSeek) that require reasoning to be echoed back on subsequent tool-calling turns.
 
 ### Context size resolution
 
