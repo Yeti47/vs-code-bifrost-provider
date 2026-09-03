@@ -48,13 +48,18 @@ export async function fetchModels(connection: BifrostConnection, signal: AbortSi
 export async function* streamChatCompletion(
 	connection: BifrostConnection,
 	request: OpenAIChatCompletionRequest,
+	sessionId: string,
 	signal: AbortSignal
 ): AsyncGenerator<OpenAIStreamChunk, void, undefined> {
 	const res = await fetch(`${connection.baseUrl}/v1/chat/completions`, {
 		method: 'POST',
 		headers: {
 			'Content-Type': 'application/json',
-			Authorization: `Bearer ${connection.apiKey}`
+			Authorization: `Bearer ${connection.apiKey}`,
+			// Forwarded verbatim to the upstream provider by Bifrost (x-bf-eh-* is stripped
+			// and re-emitted); OpenCode Go requires one stable id per conversation. See
+			// sessionTracking.ts for how sessionId is derived.
+			'x-bf-eh-x-opencode-session': sessionId
 		},
 		body: JSON.stringify(request),
 		signal

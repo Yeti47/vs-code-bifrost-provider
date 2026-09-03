@@ -153,12 +153,21 @@ describe('streamChatCompletion', () => {
 
 	const request = { model: 'm', messages: [], stream: true as const };
 
+	it('forwards sessionId as the x-bf-eh-x-opencode-session header', async () => {
+		vi.mocked(fetch).mockResolvedValueOnce(sseResponse(['data: [DONE]\n']));
+
+		await collect(streamChatCompletion(connection, request, 'conversation-42', new AbortController().signal));
+
+		const [, options] = vi.mocked(fetch).mock.calls[0];
+		expect((options as RequestInit).headers).toMatchObject({ 'x-bf-eh-x-opencode-session': 'conversation-42' });
+	});
+
 	it('yields parsed chunks from data: lines', async () => {
 		vi.mocked(fetch).mockResolvedValueOnce(
 			sseResponse(['data: {"choices":[{"delta":{"content":"hi"}}]}\n', 'data: [DONE]\n'])
 		);
 
-		const results = await collect(streamChatCompletion(connection, request, new AbortController().signal));
+		const results = await collect(streamChatCompletion(connection, request, 'session-1', new AbortController().signal));
 
 		expect(results).toEqual([{ choices: [{ delta: { content: 'hi' } }] }]);
 	});
@@ -168,7 +177,7 @@ describe('streamChatCompletion', () => {
 			sseResponse(['data: {"choices":[]}\n', 'data: [DONE]\n', 'data: {"choices":[{"delta":{"content":"unreachable"}}]}\n'])
 		);
 
-		const results = await collect(streamChatCompletion(connection, request, new AbortController().signal));
+		const results = await collect(streamChatCompletion(connection, request, 'session-1', new AbortController().signal));
 
 		expect(results).toEqual([{ choices: [] }]);
 	});
@@ -178,7 +187,7 @@ describe('streamChatCompletion', () => {
 			sseResponse([': keep-alive\n', 'event: message\n', 'data: {"choices":[]}\n', 'data: [DONE]\n'])
 		);
 
-		const results = await collect(streamChatCompletion(connection, request, new AbortController().signal));
+		const results = await collect(streamChatCompletion(connection, request, 'session-1', new AbortController().signal));
 
 		expect(results).toEqual([{ choices: [] }]);
 	});
@@ -188,7 +197,7 @@ describe('streamChatCompletion', () => {
 			sseResponse(['data: {not valid json\n', 'data: {"choices":[]}\n', 'data: [DONE]\n'])
 		);
 
-		const results = await collect(streamChatCompletion(connection, request, new AbortController().signal));
+		const results = await collect(streamChatCompletion(connection, request, 'session-1', new AbortController().signal));
 
 		expect(results).toEqual([{ choices: [] }]);
 	});
@@ -198,7 +207,7 @@ describe('streamChatCompletion', () => {
 			sseResponse(['data: {"choices":[{"del', 'ta":{"content":"hi"}}]}\n', 'data: [DONE]\n'])
 		);
 
-		const results = await collect(streamChatCompletion(connection, request, new AbortController().signal));
+		const results = await collect(streamChatCompletion(connection, request, 'session-1', new AbortController().signal));
 
 		expect(results).toEqual([{ choices: [{ delta: { content: 'hi' } }] }]);
 	});
@@ -206,7 +215,7 @@ describe('streamChatCompletion', () => {
 	it('stops without a trailing [DONE] once the stream simply ends', async () => {
 		vi.mocked(fetch).mockResolvedValueOnce(sseResponse(['data: {"choices":[]}\n']));
 
-		const results = await collect(streamChatCompletion(connection, request, new AbortController().signal));
+		const results = await collect(streamChatCompletion(connection, request, 'session-1', new AbortController().signal));
 
 		expect(results).toEqual([{ choices: [] }]);
 	});
@@ -214,7 +223,7 @@ describe('streamChatCompletion', () => {
 	it('throws a BifrostApiError on a non-ok response', async () => {
 		vi.mocked(fetch).mockResolvedValueOnce(sseResponse([], { ok: false, status: 500 }));
 
-		await expect(collect(streamChatCompletion(connection, request, new AbortController().signal))).rejects.toBeInstanceOf(
+		await expect(collect(streamChatCompletion(connection, request, 'session-1', new AbortController().signal))).rejects.toBeInstanceOf(
 			BifrostApiError
 		);
 	});
@@ -222,7 +231,7 @@ describe('streamChatCompletion', () => {
 	it('throws a BifrostApiError when the response has no body', async () => {
 		vi.mocked(fetch).mockResolvedValueOnce(sseResponse([], { noBody: true }));
 
-		await expect(collect(streamChatCompletion(connection, request, new AbortController().signal))).rejects.toBeInstanceOf(
+		await expect(collect(streamChatCompletion(connection, request, 'session-1', new AbortController().signal))).rejects.toBeInstanceOf(
 			BifrostApiError
 		);
 	});

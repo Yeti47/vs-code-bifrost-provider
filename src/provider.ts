@@ -5,6 +5,7 @@ import { getConnection, promptForConnection } from './config';
 import { BifrostDatasheet } from './datasheet';
 import { extractPlainText, toOpenAIMessages, toOpenAITools, toolModeToChoice } from './messageConversion';
 import { slugifyModelId } from './modelSlug';
+import { resolveConversationSessionId } from './sessionTracking';
 import { createThinkingPart } from './thinking';
 import { BifrostModel, OpenAIChatCompletionRequest } from './types';
 
@@ -105,10 +106,11 @@ export class BifrostChatModelProvider implements vscode.LanguageModelChatProvide
 			tools,
 			tool_choice: tools ? toolModeToChoice(options.toolMode) : undefined
 		};
+		const sessionId = resolveConversationSessionId(messages);
 
 		const toolCallBuffers = new Map<number, ToolCallBuffer>();
 
-		for await (const chunk of streamChatCompletion(connection, request, tokenToSignal(token))) {
+		for await (const chunk of streamChatCompletion(connection, request, sessionId, tokenToSignal(token))) {
 			const choice = chunk.choices?.[0];
 			if (!choice) {
 				continue;
