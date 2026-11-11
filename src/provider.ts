@@ -6,7 +6,7 @@ import { BifrostDatasheet } from './datasheet';
 import { extractPlainText, toOpenAIMessages, toOpenAITools, toolModeToChoice } from './messageConversion';
 import { slugifyModelId } from './modelSlug';
 import { ActiveProfileSource } from './profiles';
-import { resolveConversationSessionId } from './sessionTracking';
+import { resolveSessionId } from './sessionTracking';
 import { createThinkingPart } from './thinking';
 import { BifrostModel, OpenAIChatCompletionRequest } from './types';
 
@@ -111,7 +111,7 @@ export class BifrostChatModelProvider implements vscode.LanguageModelChatProvide
 			tool_choice: tools ? toolModeToChoice(options.toolMode) : undefined
 		};
 		const requestContext = {
-			sessionId: resolveConversationSessionId(messages),
+			sessionId: resolveSessionId(messages, options.modelOptions),
 			profile: this.profiles.getActiveProfile()
 		};
 

@@ -11,6 +11,29 @@ interface TrackedConversation {
 
 const conversations: TrackedConversation[] = [];
 
+// The host id is forwarded as a header value, so only accept something that is safe to send as one.
+const HOST_CONVERSATION_ID_PATTERN = /^[\x21-\x7E]{1,200}$/;
+
+/**
+ * Returns the session id to send for this request: the host's own conversation id when it provides
+ * one, otherwise a structurally tracked id (see {@link resolveConversationSessionId}).
+ *
+ * The Copilot harness (agent host) passes a stable `_conversationId` in `modelOptions`, and its
+ * requests don't reliably extend the previous turn's transcript, so structural tracking minted a
+ * new id on every turn there. Local chat passes no such id. The field is underscore-prefixed and
+ * undocumented, so it is validated and treated as optional.
+ */
+export function resolveSessionId(
+	messages: readonly vscode.LanguageModelChatRequestMessage[],
+	modelOptions: { readonly [name: string]: unknown } | undefined
+): string {
+	const hostId = modelOptions?._conversationId;
+	if (typeof hostId === 'string' && HOST_CONVERSATION_ID_PATTERN.test(hostId)) {
+		return hostId;
+	}
+	return resolveConversationSessionId(messages);
+}
+
 /**
  * Derives a stable id for the conversation `messages` belongs to: the same id is
  * returned across turns of one conversation, and a fresh one is minted otherwise.

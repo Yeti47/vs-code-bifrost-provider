@@ -372,6 +372,16 @@ describe('BifrostChatModelProvider.provideLanguageModelChatResponse', () => {
 		expect(requestContext).toEqual({ sessionId: expect.any(String), profile: 'project-a' });
 	});
 
+	it('sends the host conversation id as the session id when the host provides one', async () => {
+		vi.mocked(streamChatCompletion).mockReturnValueOnce(streamOf([]));
+		const provider = new BifrostChatModelProvider(configureConnection(), noProfile);
+		const harnessOptions = { ...options, modelOptions: { max_tokens: 1000, _conversationId: 'conv-42' } };
+
+		await provider.provideLanguageModelChatResponse(modelInfo, [], harnessOptions, { report: vi.fn() } as never, fakeToken());
+
+		expect(vi.mocked(streamChatCompletion).mock.calls[0][2].sessionId).toBe('conv-42');
+	});
+
 	it('reads the active profile per request, so a newly selected profile applies immediately', async () => {
 		vi.mocked(streamChatCompletion).mockReturnValue(streamOf([]));
 		let active: string | undefined = 'first';
