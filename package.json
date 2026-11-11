@@ -2,7 +2,7 @@
 	"name": "bifrost-copilot-provider",
 	"displayName": "Bifrost Copilot Provider",
 	"description": "Copilot Chat model provider for a self-hosted Bifrost LLM gateway, with automatic model and context-size discovery.",
-	"version": "0.5.0",
+	"version": "0.6.0",
 	"publisher": "Yeti47",
 	"license": "MIT",
 	"repository": {
