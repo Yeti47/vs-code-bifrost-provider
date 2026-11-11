@@ -24,6 +24,8 @@ function fakeContext(secrets: Record<string, string> = {}) {
 	} as unknown as import('vscode').ExtensionContext;
 }
 
+const noProfile = { getActiveProfile: () => undefined };
+
 function fakeToken(): import('vscode').CancellationToken {
 	return new vscode.CancellationTokenSource().token;
 }
@@ -57,7 +59,7 @@ describe('BifrostChatModelProvider.provideLanguageModelChatInformation', () => {
 	});
 
 	it('returns no models when unconfigured and called silently', async () => {
-		const provider = new BifrostChatModelProvider(fakeContext());
+		const provider = new BifrostChatModelProvider(fakeContext(), noProfile);
 
 		const result = await provider.provideLanguageModelChatInformation({ silent: true } as never, fakeToken());
 
@@ -67,7 +69,7 @@ describe('BifrostChatModelProvider.provideLanguageModelChatInformation', () => {
 
 	it('prompts for a connection when unconfigured and not silent, returning [] if cancelled', async () => {
 		vi.mocked(vscode.window.showInputBox).mockResolvedValueOnce(undefined);
-		const provider = new BifrostChatModelProvider(fakeContext());
+		const provider = new BifrostChatModelProvider(fakeContext(), noProfile);
 
 		const result = await provider.provideLanguageModelChatInformation({ silent: false } as never, fakeToken());
 
@@ -79,7 +81,7 @@ describe('BifrostChatModelProvider.provideLanguageModelChatInformation', () => {
 			{ id: 'openrouter/gpt-4', name: 'GPT-4', max_input_tokens: 8000, supported_parameters: ['tools'] }
 		];
 		vi.mocked(fetchModels).mockResolvedValueOnce(models);
-		const provider = new BifrostChatModelProvider(configureConnection());
+		const provider = new BifrostChatModelProvider(configureConnection(), noProfile);
 
 		const [info] = await provider.provideLanguageModelChatInformation({ silent: false } as never, fakeToken());
 
@@ -96,7 +98,7 @@ describe('BifrostChatModelProvider.provideLanguageModelChatInformation', () => {
 	it('falls back to context_length when max_input_tokens is absent', async () => {
 		const models: BifrostModel[] = [{ id: 'ollama/llama3.1', context_length: 32000 }];
 		vi.mocked(fetchModels).mockResolvedValueOnce(models);
-		const provider = new BifrostChatModelProvider(configureConnection());
+		const provider = new BifrostChatModelProvider(configureConnection(), noProfile);
 
 		const [info] = await provider.provideLanguageModelChatInformation({ silent: false } as never, fakeToken());
 
@@ -106,7 +108,7 @@ describe('BifrostChatModelProvider.provideLanguageModelChatInformation', () => {
 	it('assumes tool calling is supported when supported_parameters is absent', async () => {
 		const models: BifrostModel[] = [{ id: 'custom/model', max_input_tokens: 4096 }];
 		vi.mocked(fetchModels).mockResolvedValueOnce(models);
-		const provider = new BifrostChatModelProvider(configureConnection());
+		const provider = new BifrostChatModelProvider(configureConnection(), noProfile);
 
 		const [info] = await provider.provideLanguageModelChatInformation({ silent: false } as never, fakeToken());
 
@@ -116,7 +118,7 @@ describe('BifrostChatModelProvider.provideLanguageModelChatInformation', () => {
 	it('reports no tool calling when supported_parameters excludes tools', async () => {
 		const models: BifrostModel[] = [{ id: 'custom/model', max_input_tokens: 4096, supported_parameters: ['temperature'] }];
 		vi.mocked(fetchModels).mockResolvedValueOnce(models);
-		const provider = new BifrostChatModelProvider(configureConnection());
+		const provider = new BifrostChatModelProvider(configureConnection(), noProfile);
 
 		const [info] = await provider.provideLanguageModelChatInformation({ silent: false } as never, fakeToken());
 
@@ -128,7 +130,7 @@ describe('BifrostChatModelProvider.provideLanguageModelChatInformation', () => {
 			{ id: 'custom/vision', max_input_tokens: 4096, architecture: { input_modalities: ['text', 'image'] } }
 		];
 		vi.mocked(fetchModels).mockResolvedValueOnce(models);
-		const provider = new BifrostChatModelProvider(configureConnection());
+		const provider = new BifrostChatModelProvider(configureConnection(), noProfile);
 
 		const [info] = await provider.provideLanguageModelChatInformation({ silent: false } as never, fakeToken());
 
@@ -141,7 +143,7 @@ describe('BifrostChatModelProvider.provideLanguageModelChatInformation', () => {
 			{ id: 'opencode-go/kimi-k3' }
 		];
 		vi.mocked(fetchModels).mockResolvedValueOnce(models);
-		const provider = new BifrostChatModelProvider(configureConnection());
+		const provider = new BifrostChatModelProvider(configureConnection(), noProfile);
 
 		const infos = await provider.provideLanguageModelChatInformation({ silent: false } as never, fakeToken());
 		const sibling = infos.find((i) => i.id === 'opencode-go/kimi-k3')!;
@@ -154,7 +156,7 @@ describe('BifrostChatModelProvider.provideLanguageModelChatInformation', () => {
 		__setConfigValue('bifrost', 'contextSizeOverrides', { custom: 16000 });
 		const models: BifrostModel[] = [{ id: 'custom/model' }];
 		vi.mocked(fetchModels).mockResolvedValueOnce(models);
-		const provider = new BifrostChatModelProvider(configureConnection());
+		const provider = new BifrostChatModelProvider(configureConnection(), noProfile);
 
 		const [info] = await provider.provideLanguageModelChatInformation({ silent: false } as never, fakeToken());
 
@@ -164,7 +166,7 @@ describe('BifrostChatModelProvider.provideLanguageModelChatInformation', () => {
 	it('falls back to the hardcoded default when nothing resolves the context size', async () => {
 		const models: BifrostModel[] = [{ id: 'custom/model' }];
 		vi.mocked(fetchModels).mockResolvedValueOnce(models);
-		const provider = new BifrostChatModelProvider(configureConnection());
+		const provider = new BifrostChatModelProvider(configureConnection(), noProfile);
 
 		const [info] = await provider.provideLanguageModelChatInformation({ silent: false } as never, fakeToken());
 
@@ -174,7 +176,7 @@ describe('BifrostChatModelProvider.provideLanguageModelChatInformation', () => {
 
 	it('caches results and does not re-fetch within the TTL', async () => {
 		vi.mocked(fetchModels).mockResolvedValue([{ id: 'a', max_input_tokens: 1000 }]);
-		const provider = new BifrostChatModelProvider(configureConnection());
+		const provider = new BifrostChatModelProvider(configureConnection(), noProfile);
 
 		await provider.provideLanguageModelChatInformation({ silent: false } as never, fakeToken());
 		await provider.provideLanguageModelChatInformation({ silent: false } as never, fakeToken());
@@ -184,7 +186,7 @@ describe('BifrostChatModelProvider.provideLanguageModelChatInformation', () => {
 
 	it('re-fetches after invalidateCache()', async () => {
 		vi.mocked(fetchModels).mockResolvedValue([{ id: 'a', max_input_tokens: 1000 }]);
-		const provider = new BifrostChatModelProvider(configureConnection());
+		const provider = new BifrostChatModelProvider(configureConnection(), noProfile);
 
 		await provider.provideLanguageModelChatInformation({ silent: false } as never, fakeToken());
 		provider.invalidateCache();
@@ -197,7 +199,7 @@ describe('BifrostChatModelProvider.provideLanguageModelChatInformation', () => {
 		const { BifrostApiError } = await import('../../src/bifrostClient');
 		vi.mocked(fetchModels).mockRejectedValueOnce(new BifrostApiError(401, 'nope'));
 		vi.mocked(vscode.window.showErrorMessage).mockResolvedValueOnce('Reconfigure');
-		const provider = new BifrostChatModelProvider(configureConnection());
+		const provider = new BifrostChatModelProvider(configureConnection(), noProfile);
 
 		const result = await provider.provideLanguageModelChatInformation({ silent: false } as never, fakeToken());
 
@@ -211,7 +213,7 @@ describe('BifrostChatModelProvider.provideLanguageModelChatInformation', () => {
 
 	it('suppresses the error dialog on a silent discovery failure', async () => {
 		vi.mocked(fetchModels).mockRejectedValueOnce(new Error('boom'));
-		const provider = new BifrostChatModelProvider(configureConnection());
+		const provider = new BifrostChatModelProvider(configureConnection(), noProfile);
 
 		const result = await provider.provideLanguageModelChatInformation({ silent: true } as never, fakeToken());
 
@@ -231,7 +233,7 @@ describe('BifrostChatModelProvider.provideLanguageModelChatResponse', () => {
 	const options = { toolMode: vscode.LanguageModelChatToolMode.Auto } as unknown as import('vscode').ProvideLanguageModelChatResponseOptions;
 
 	it('throws if bifrost is not configured', async () => {
-		const provider = new BifrostChatModelProvider(fakeContext());
+		const provider = new BifrostChatModelProvider(fakeContext(), noProfile);
 		const progress = { report: vi.fn() };
 
 		await expect(
@@ -243,7 +245,7 @@ describe('BifrostChatModelProvider.provideLanguageModelChatResponse', () => {
 		vi.mocked(streamChatCompletion).mockReturnValueOnce(
 			streamOf([{ choices: [{ delta: { content: 'Hel' } }] }, { choices: [{ delta: { content: 'lo' } }] }])
 		);
-		const provider = new BifrostChatModelProvider(configureConnection());
+		const provider = new BifrostChatModelProvider(configureConnection(), noProfile);
 		const progress = { report: vi.fn() };
 
 		await provider.provideLanguageModelChatResponse(modelInfo, [], options, progress as never, fakeToken());
@@ -263,7 +265,7 @@ describe('BifrostChatModelProvider.provideLanguageModelChatResponse', () => {
 				{ choices: [{ delta: { content: 'answer' } }] }
 			])
 		);
-		const provider = new BifrostChatModelProvider(configureConnection());
+		const provider = new BifrostChatModelProvider(configureConnection(), noProfile);
 		const progress = { report: vi.fn() };
 
 		await provider.provideLanguageModelChatResponse(modelInfo, [], options, progress as never, fakeToken());
@@ -280,7 +282,7 @@ describe('BifrostChatModelProvider.provideLanguageModelChatResponse', () => {
 		vi.mocked(streamChatCompletion).mockReturnValueOnce(
 			streamOf([{ choices: [{ delta: { reasoning: 'thinking' } }] }])
 		);
-		const provider = new BifrostChatModelProvider(configureConnection());
+		const provider = new BifrostChatModelProvider(configureConnection(), noProfile);
 		const progress = { report: vi.fn() };
 
 		await provider.provideLanguageModelChatResponse(modelInfo, [], options, progress as never, fakeToken());
@@ -293,7 +295,7 @@ describe('BifrostChatModelProvider.provideLanguageModelChatResponse', () => {
 		vi.mocked(streamChatCompletion).mockReturnValueOnce(
 			streamOf([{ choices: [{ delta: { reasoning_content: 'native', reasoning: 'openrouter-style' } }] }])
 		);
-		const provider = new BifrostChatModelProvider(configureConnection());
+		const provider = new BifrostChatModelProvider(configureConnection(), noProfile);
 		const progress = { report: vi.fn() };
 
 		await provider.provideLanguageModelChatResponse(modelInfo, [], options, progress as never, fakeToken());
@@ -306,7 +308,7 @@ describe('BifrostChatModelProvider.provideLanguageModelChatResponse', () => {
 			streamOf([{ choices: [{ delta: { reasoning_content: 'dropped' } }] }, { choices: [{ delta: { content: 'answer' } }] }])
 		);
 		__setThinkingPartAvailable(false);
-		const provider = new BifrostChatModelProvider(configureConnection());
+		const provider = new BifrostChatModelProvider(configureConnection(), noProfile);
 		const progress = { report: vi.fn() };
 
 		await provider.provideLanguageModelChatResponse(modelInfo, [], options, progress as never, fakeToken());
@@ -325,7 +327,7 @@ describe('BifrostChatModelProvider.provideLanguageModelChatResponse', () => {
 				{ choices: [{ delta: {}, finish_reason: 'tool_calls' }] }
 			])
 		);
-		const provider = new BifrostChatModelProvider(configureConnection());
+		const provider = new BifrostChatModelProvider(configureConnection(), noProfile);
 		const progress = { report: vi.fn() };
 
 		await provider.provideLanguageModelChatResponse(modelInfo, [], options, progress as never, fakeToken());
@@ -351,7 +353,7 @@ describe('BifrostChatModelProvider.provideLanguageModelChatResponse', () => {
 				}
 			])
 		);
-		const provider = new BifrostChatModelProvider(configureConnection());
+		const provider = new BifrostChatModelProvider(configureConnection(), noProfile);
 		const progress = { report: vi.fn() };
 
 		await provider.provideLanguageModelChatResponse(modelInfo, [], options, progress as never, fakeToken());
@@ -360,9 +362,33 @@ describe('BifrostChatModelProvider.provideLanguageModelChatResponse', () => {
 		expect(part.input).toEqual({});
 	});
 
+	it('passes the session id and active profile to the client', async () => {
+		vi.mocked(streamChatCompletion).mockReturnValueOnce(streamOf([]));
+		const provider = new BifrostChatModelProvider(configureConnection(), { getActiveProfile: () => 'project-a' });
+
+		await provider.provideLanguageModelChatResponse(modelInfo, [], options, { report: vi.fn() } as never, fakeToken());
+
+		const [, , requestContext] = vi.mocked(streamChatCompletion).mock.calls[0];
+		expect(requestContext).toEqual({ sessionId: expect.any(String), profile: 'project-a' });
+	});
+
+	it('reads the active profile per request, so a newly selected profile applies immediately', async () => {
+		vi.mocked(streamChatCompletion).mockReturnValue(streamOf([]));
+		let active: string | undefined = 'first';
+		const provider = new BifrostChatModelProvider(configureConnection(), { getActiveProfile: () => active });
+
+		await provider.provideLanguageModelChatResponse(modelInfo, [], options, { report: vi.fn() } as never, fakeToken());
+		active = undefined;
+		vi.mocked(streamChatCompletion).mockReturnValue(streamOf([]));
+		await provider.provideLanguageModelChatResponse(modelInfo, [], options, { report: vi.fn() } as never, fakeToken());
+
+		expect(vi.mocked(streamChatCompletion).mock.calls[0][2].profile).toBe('first');
+		expect(vi.mocked(streamChatCompletion).mock.calls[1][2].profile).toBeUndefined();
+	});
+
 	it('ignores chunks with no choices', async () => {
 		vi.mocked(streamChatCompletion).mockReturnValueOnce(streamOf([{ choices: [] }, { choices: undefined }]));
-		const provider = new BifrostChatModelProvider(configureConnection());
+		const provider = new BifrostChatModelProvider(configureConnection(), noProfile);
 		const progress = { report: vi.fn() };
 
 		await provider.provideLanguageModelChatResponse(modelInfo, [], options, progress as never, fakeToken());
@@ -373,7 +399,7 @@ describe('BifrostChatModelProvider.provideLanguageModelChatResponse', () => {
 
 describe('BifrostChatModelProvider.provideTokenCount', () => {
 	it('estimates token count from a plain string', async () => {
-		const provider = new BifrostChatModelProvider(fakeContext());
+		const provider = new BifrostChatModelProvider(fakeContext(), noProfile);
 
 		const count = await provider.provideTokenCount(
 			{} as never,
@@ -385,7 +411,7 @@ describe('BifrostChatModelProvider.provideTokenCount', () => {
 	});
 
 	it('rounds up partial estimates', async () => {
-		const provider = new BifrostChatModelProvider(fakeContext());
+		const provider = new BifrostChatModelProvider(fakeContext(), noProfile);
 
 		const count = await provider.provideTokenCount({} as never, '123', fakeToken());
 
@@ -393,7 +419,7 @@ describe('BifrostChatModelProvider.provideTokenCount', () => {
 	});
 
 	it('estimates token count from a chat message by extracting its plain text', async () => {
-		const provider = new BifrostChatModelProvider(fakeContext());
+		const provider = new BifrostChatModelProvider(fakeContext(), noProfile);
 		const message = {
 			role: vscode.LanguageModelChatMessageRole.User,
 			content: [new vscode.LanguageModelTextPart('12345678')]

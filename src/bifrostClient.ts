@@ -1,5 +1,13 @@
 import { BifrostConnection, BifrostModel, BifrostModelsResponse, OpenAIChatCompletionRequest, OpenAIStreamChunk } from './types';
 
+/** Per-request metadata carried in headers rather than the OpenAI-shaped body. */
+export interface ChatRequestContext {
+	/** Stable per-conversation id; see sessionTracking.ts. */
+	sessionId: string;
+	/** Selected profile, sent as x-bf-profile for Bifrost routing rules / log filtering. */
+	profile?: string;
+}
+
 export class BifrostApiError extends Error {
 	constructor(public readonly status: number, message: string) {
 		super(message || `Bifrost request failed with status ${status}`);
@@ -48,19 +56,25 @@ export async function fetchModels(connection: BifrostConnection, signal: AbortSi
 export async function* streamChatCompletion(
 	connection: BifrostConnection,
 	request: OpenAIChatCompletionRequest,
-	sessionId: string,
+	requestContext: ChatRequestContext,
 	signal: AbortSignal
 ): AsyncGenerator<OpenAIStreamChunk, void, undefined> {
+	const headers: Record<string, string> = {
+		'Content-Type': 'application/json',
+		Authorization: `Bearer ${connection.apiKey}`,
+		// Forwarded verbatim to the upstream provider by Bifrost (x-bf-eh-* is stripped
+		// and re-emitted); OpenCode Go requires one stable id per conversation. See
+		// sessionTracking.ts for how sessionId is derived.
+		'x-bf-eh-x-opencode-session': requestContext.sessionId
+	};
+	if (requestContext.profile) {
+		// Consumed by Bifrost itself (routing rules, log filters); not forwarded upstream.
+		headers['x-bf-profile'] = requestContext.profile;
+	}
+
 	const res = await fetch(`${connection.baseUrl}/v1/chat/completions`, {
 		method: 'POST',
-		headers: {
-			'Content-Type': 'application/json',
-			Authorization: `Bearer ${connection.apiKey}`,
-			// Forwarded verbatim to the upstream provider by Bifrost (x-bf-eh-* is stripped
-			// and re-emitted); OpenCode Go requires one stable id per conversation. See
-			// sessionTracking.ts for how sessionId is derived.
-			'x-bf-eh-x-opencode-session': sessionId
-		},
+		headers,
 		body: JSON.stringify(request),
 		signal
 	});

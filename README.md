@@ -21,6 +21,16 @@ The virtual key is stored in VS Code's encrypted Secret Storage, never in settin
 - Image input for vision-capable models.
 - Thinking-mode reasoning shown live as it streams, for gateways that send it (`reasoning_content` or `reasoning` on the delta). Display only — nothing is replayed back to the API on later turns, so this doesn't help with providers (e.g. DeepSeek) that require reasoning to be echoed back on subsequent tool-calling turns.
 
+### Profiles
+
+Profiles tag your requests so Bifrost can tell them apart, e.g. one profile per project on a single virtual key. When a profile is selected, every chat request carries an `x-bf-profile: <profile name>` header, which you can match in Bifrost routing rules (e.g. send project A to one provider and project B to another) and filter on in the Bifrost dashboard.
+
+- Click the profile entry (tag icon) in the status bar (or run **Bifrost: Select Profile**) to pick a profile, or **No profile** to stop sending the header.
+- Choose **Configure Profiles…** in that picker (or run **Bifrost: Configure Profiles**) to add, rename or remove profiles.
+- The profile list and the selected profile are stored in the `bifrost.profiles` and `bifrost.activeProfile` user settings, so you can also edit them by hand.
+- The selection is global: it applies to every VS Code window, and you switch it when you switch projects. It can't be per-window because Copilot harness sessions run in one shared background process that sends all Bifrost requests through a single window, and those requests don't say which project they belong to.
+- Profile names are sent verbatim as a header value, so they're limited to printable ASCII (max 128 characters, no leading/trailing spaces).
+
 ### Context size resolution
 
 Not every Bifrost provider reports `context_length`/`max_input_tokens` (its OpenRouter passthrough does; providers like Ollama, Cloudflare Workers AI, or custom OpenAI-compatible ones typically don't). When Bifrost doesn't know, the extension tries, in order:

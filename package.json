@@ -32,6 +32,16 @@
 				"command": "bifrost.manage",
 				"title": "Configure Bifrost Connection",
 				"category": "Bifrost"
+			},
+			{
+				"command": "bifrost.selectProfile",
+				"title": "Select Profile",
+				"category": "Bifrost"
+			},
+			{
+				"command": "bifrost.configureProfiles",
+				"title": "Configure Profiles",
+				"category": "Bifrost"
 			}
 		],
 		"configuration": {
@@ -49,6 +59,24 @@
 					},
 					"default": {},
 					"description": "Some Bifrost providers (e.g. ollama, custom OpenAI-compatible providers) report no context-size metadata at all, so a conservative default is used instead. Use this to correct it. Keys can be an exact model id (e.g. \"ollama/llama3.1\") or a provider prefix (e.g. \"ollama\") used when no exact key matches. Values are the model's max input tokens."
+				},
+				"bifrost.profiles": {
+					"type": "array",
+					"items": {
+						"type": "string",
+						"pattern": "^[!-~](?:[ -~]*[!-~])?$",
+						"maxLength": 128
+					},
+					"uniqueItems": true,
+					"default": [],
+					"scope": "application",
+					"markdownDescription": "Profile names available in the **Bifrost: Select Profile** picker (status bar). The selected profile is sent as the `x-bf-profile` header on chat requests, for use in Bifrost routing rules and log filtering."
+				},
+				"bifrost.activeProfile": {
+					"type": "string",
+					"default": "",
+					"scope": "application",
+					"markdownDescription": "The profile currently sent as the `x-bf-profile` header, chosen from `#bifrost.profiles#`. Empty (or a name not in that list) sends no header. Applies to all windows, including Copilot harness sessions."
 				}
 			}
 		}
