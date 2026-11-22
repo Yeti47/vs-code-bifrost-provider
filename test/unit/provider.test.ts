@@ -35,6 +35,10 @@ function configureConnection(apiKey = 'test-key') {
 	return fakeContext({ 'bifrost.apiKey': apiKey });
 }
 
+function datasheetResponse(body: unknown): Response {
+	return { ok: true, status: 200, json: async () => body } as unknown as Response;
+}
+
 async function* streamOf(chunks: OpenAIStreamChunk[]): AsyncGenerator<OpenAIStreamChunk> {
 	for (const chunk of chunks) {
 		yield chunk;
@@ -88,7 +92,7 @@ describe('BifrostChatModelProvider.provideLanguageModelChatInformation', () => {
 		expect(info).toMatchObject({
 			id: 'openrouter/gpt-4',
 			family: 'openrouter',
-			name: 'openrouter: GPT-4',
+			name: 'OpenRouter: GPT-4',
 			maxInputTokens: 8000,
 			maxOutputTokens: 4096,
 			capabilities: { toolCalling: true, imageInput: false }
@@ -135,6 +139,61 @@ describe('BifrostChatModelProvider.provideLanguageModelChatInformation', () => {
 		const [info] = await provider.provideLanguageModelChatInformation({ silent: false } as never, fakeToken());
 
 		expect(info.capabilities?.imageInput).toBe(true);
+	});
+
+	it('derives a readable label when Bifrost reports no display name', async () => {
+		vi.mocked(fetchModels).mockResolvedValueOnce([{ id: 'github-copilot/claude-sonnet-5.5', max_input_tokens: 4096 }]);
+		const provider = new BifrostChatModelProvider(configureConnection(), noProfile);
+
+		const [info] = await provider.provideLanguageModelChatInformation({ silent: false } as never, fakeToken());
+
+		expect(info.name).toBe('GitHub Copilot: Claude Sonnet 5.5');
+		expect(info.detail).toBe('github-copilot/claude-sonnet-5.5');
+	});
+
+	it('reports no image input when the architecture lists modalities without image', async () => {
+		vi.stubGlobal('fetch', vi.fn(async () => datasheetResponse({ 'p/text-only': { mode: 'chat', supports_vision: true } })));
+		const models: BifrostModel[] = [
+			{ id: 'custom/text-only', max_input_tokens: 4096, architecture: { input_modalities: ['text'] } }
+		];
+		vi.mocked(fetchModels).mockResolvedValueOnce(models);
+		const provider = new BifrostChatModelProvider(configureConnection(), noProfile);
+
+		const [info] = await provider.provideLanguageModelChatInformation({ silent: false } as never, fakeToken());
+
+		expect(info.capabilities?.imageInput).toBe(false);
+	});
+
+	it('cross-references image input from a sibling model that reports modalities', async () => {
+		const models: BifrostModel[] = [
+			{ id: 'openrouter/anthropic/claude-opus-5.5', max_input_tokens: 4096, architecture: { input_modalities: ['text', 'image'] } },
+			{ id: 'github-copilot/claude-opus-5.5', max_input_tokens: 4096 }
+		];
+		vi.mocked(fetchModels).mockResolvedValueOnce(models);
+		const provider = new BifrostChatModelProvider(configureConnection(), noProfile);
+
+		const infos = await provider.provideLanguageModelChatInformation({ silent: false } as never, fakeToken());
+
+		expect(infos.find((i) => i.id === 'github-copilot/claude-opus-5.5')!.capabilities?.imageInput).toBe(true);
+	});
+
+	it('falls back to the public registry for image input when Bifrost reports no modalities', async () => {
+		vi.stubGlobal('fetch', vi.fn(async () => datasheetResponse({ 'anthropic/claude-opus-5-5': { mode: 'chat', supports_vision: true } })));
+		vi.mocked(fetchModels).mockResolvedValueOnce([{ id: 'anthropic/claude-opus-5-5', max_input_tokens: 1000000 }]);
+		const provider = new BifrostChatModelProvider(configureConnection(), noProfile);
+
+		const [info] = await provider.provideLanguageModelChatInformation({ silent: false } as never, fakeToken());
+
+		expect(info.capabilities?.imageInput).toBe(true);
+	});
+
+	it('assumes no image input when nothing knows about the model', async () => {
+		vi.mocked(fetchModels).mockResolvedValueOnce([{ id: 'custom/mystery', max_input_tokens: 4096 }]);
+		const provider = new BifrostChatModelProvider(configureConnection(), noProfile);
+
+		const [info] = await provider.provideLanguageModelChatInformation({ silent: false } as never, fakeToken());
+
+		expect(info.capabilities?.imageInput).toBe(false);
 	});
 
 	it('cross-references context size from a sibling model with the same base name', async () => {
@@ -362,17 +421,28 @@ describe('BifrostChatModelProvider.provideLanguageModelChatResponse', () => {
 		expect(part.input).toEqual({});
 	});
 
-	it('passes the session id and active profile to the client', async () => {
+	it('passes the active profile and no session id to the client by default', async () => {
 		vi.mocked(streamChatCompletion).mockReturnValueOnce(streamOf([]));
 		const provider = new BifrostChatModelProvider(configureConnection(), { getActiveProfile: () => 'project-a' });
 
 		await provider.provideLanguageModelChatResponse(modelInfo, [], options, { report: vi.fn() } as never, fakeToken());
 
 		const [, , requestContext] = vi.mocked(streamChatCompletion).mock.calls[0];
-		expect(requestContext).toEqual({ sessionId: expect.any(String), profile: 'project-a' });
+		expect(requestContext).toEqual({ sessionId: undefined, profile: 'project-a' });
+	});
+
+	it('passes a session id when the OpenCode session header setting is on', async () => {
+		__setConfigValue('bifrost', 'sendOpenCodeSessionHeader', true);
+		vi.mocked(streamChatCompletion).mockReturnValueOnce(streamOf([]));
+		const provider = new BifrostChatModelProvider(configureConnection(), noProfile);
+
+		await provider.provideLanguageModelChatResponse(modelInfo, [], options, { report: vi.fn() } as never, fakeToken());
+
+		expect(vi.mocked(streamChatCompletion).mock.calls[0][2].sessionId).toEqual(expect.any(String));
 	});
 
 	it('sends the host conversation id as the session id when the host provides one', async () => {
+		__setConfigValue('bifrost', 'sendOpenCodeSessionHeader', true);
 		vi.mocked(streamChatCompletion).mockReturnValueOnce(streamOf([]));
 		const provider = new BifrostChatModelProvider(configureConnection(), noProfile);
 		const harnessOptions = { ...options, modelOptions: { max_tokens: 1000, _conversationId: 'conv-42' } };

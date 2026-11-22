@@ -18,7 +18,8 @@ The virtual key is stored in VS Code's encrypted Secret Storage, never in settin
 - Automatic model discovery from Bifrost's `/v1/models` endpoint, across every provider it has configured.
 - Streaming chat responses.
 - Tool calling (for Copilot agent/edit mode).
-- Image input for vision-capable models.
+- Readable picker labels in the form `Provider: Model` (e.g. `GitHub Copilot: Claude Sonnet 5.5`). Bifrost's own display name is used when it reports one; otherwise the label is derived from the model id. The full id is still shown as the model's detail.
+- Image input for vision-capable models. Most Bifrost providers don't report input modalities, so when Bifrost is silent the extension checks another provider's copy of the same model, then Bifrost's public model registry (see below). Only models none of these know about are treated as text-only.
 - Thinking-mode reasoning shown live as it streams, for gateways that send it (`reasoning_content` or `reasoning` on the delta). Display only — nothing is replayed back to the API on later turns, so this doesn't help with providers (e.g. DeepSeek) that require reasoning to be echoed back on subsequent tool-calling turns.
 
 ### Profiles
@@ -30,6 +31,10 @@ Profiles tag your requests so Bifrost can tell them apart, e.g. one profile per 
 - The profile list and the selected profile are stored in the `bifrost.profiles` and `bifrost.activeProfile` user settings, so you can also edit them by hand.
 - The selection is global: it applies to every VS Code window, and you switch it when you switch projects. It can't be per-window because Copilot harness sessions run in one shared background process that sends all Bifrost requests through a single window, and those requests don't say which project they belong to.
 - Profile names are sent verbatim as a header value, so they're limited to printable ASCII (max 128 characters, no leading/trailing spaces).
+
+### OpenCode Go sessions (older Bifrost versions)
+
+Since v2.6.0, Bifrost manages OpenCode Go sessions itself: requests carry a stable `x-opencode-session` header per virtual key, resolved from the client's headers. On Bifrost versions before v2.6.0, turn on the `bifrost.sendOpenCodeSessionHeader` setting: the extension then sends one stable id per conversation as `x-bf-eh-x-opencode-session`, which Bifrost forwards to OpenCode Go as `x-opencode-session`. It is off by default.
 
 ### Context size resolution
 

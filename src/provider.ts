@@ -2,7 +2,8 @@ import * as vscode from 'vscode';
 import { BifrostApiError, fetchModels, streamChatCompletion } from './bifrostClient';
 import { tokenToSignal } from './cancellation';
 import { getConnection, promptForConnection } from './config';
-import { BifrostDatasheet } from './datasheet';
+import { BifrostDatasheet, DatasheetEntry } from './datasheet';
+import { formatModelName, formatProviderName } from './displayNames';
 import { extractPlainText, toOpenAIMessages, toOpenAITools, toolModeToChoice } from './messageConversion';
 import { slugifyModelId } from './modelSlug';
 import { ActiveProfileSource } from './profiles';
@@ -76,9 +77,9 @@ export class BifrostChatModelProvider implements vscode.LanguageModelChatProvide
 		try {
 			const models = await fetchModels(connection, tokenToSignal(token));
 			const overrides = vscode.workspace.getConfiguration('bifrost').get<Record<string, number>>('contextSizeOverrides', {});
-			const siblingContext = buildSiblingContextIndex(models);
+			const siblings = buildSiblingIndex(models);
 			const mapped = await Promise.all(
-				models.map((model) => this.toLanguageModelChatInformation(model, overrides, siblingContext, token))
+				models.map((model) => this.toLanguageModelChatInformation(model, overrides, siblings, token))
 			);
 			this.cache = { connectionKey, timestamp: Date.now(), models: mapped };
 			return mapped;
@@ -111,7 +112,7 @@ export class BifrostChatModelProvider implements vscode.LanguageModelChatProvide
 			tool_choice: tools ? toolModeToChoice(options.toolMode) : undefined
 		};
 		const requestContext = {
-			sessionId: resolveSessionId(messages, options.modelOptions),
+			sessionId: sendOpenCodeSessionHeader() ? resolveSessionId(messages, options.modelOptions) : undefined,
 			profile: this.profiles.getActiveProfile()
 		};
 
@@ -181,11 +182,14 @@ export class BifrostChatModelProvider implements vscode.LanguageModelChatProvide
 	private async toLanguageModelChatInformation(
 		model: BifrostModel,
 		contextSizeOverrides: Record<string, number>,
-		siblingContext: Map<string, SiblingContextEntry>,
+		siblings: SiblingIndex,
 		token: vscode.CancellationToken
 	): Promise<vscode.LanguageModelChatInformation> {
 		const family = model.id.includes('/') ? model.id.split('/')[0] : model.id;
-		const resolved = await this.resolveMaxInputTokens(model, family, contextSizeOverrides, siblingContext, token);
+		// Looked up lazily: only models Bifrost reports no metadata for need the registry.
+		let datasheetEntry: Promise<DatasheetEntry | undefined> | undefined;
+		const datasheet = () => (datasheetEntry ??= this.datasheet.lookup(model.id, token));
+		const resolved = await this.resolveMaxInputTokens(model, family, contextSizeOverrides, siblings, datasheet);
 		const { maxInputTokens } = resolved;
 		const maxOutputTokens = model.max_output_tokens ?? Math.min(maxInputTokens, 4096);
 		// Bifrost only carries rich catalog metadata (supported_parameters, etc.) for some providers
@@ -194,13 +198,13 @@ export class BifrostChatModelProvider implements vscode.LanguageModelChatProvide
 		const toolCalling = model.supported_parameters
 			? model.supported_parameters.some((p) => p === 'tools' || p === 'tool_choice')
 			: true;
-		const imageInput = model.architecture?.input_modalities?.includes('image') ?? false;
+		const imageInput = await resolveImageInput(model, siblings, datasheet);
 
 		const tooltip = this.describeContextSize(family, resolved);
 
 		return {
 			id: model.id,
-			name: `${family}: ${model.name ?? model.id}`,
+			name: `${formatProviderName(family)}: ${formatModelName(model.id, model.name)}`,
 			family,
 			version: '1.0.0',
 			maxInputTokens,
@@ -215,8 +219,8 @@ export class BifrostChatModelProvider implements vscode.LanguageModelChatProvide
 		model: BifrostModel,
 		provider: string,
 		overrides: Record<string, number>,
-		siblingContext: Map<string, SiblingContextEntry>,
-		token: vscode.CancellationToken
+		siblings: SiblingIndex,
+		datasheet: () => Promise<DatasheetEntry | undefined>
 	): Promise<ResolvedContextSize> {
 		if (model.max_input_tokens) {
 			return { maxInputTokens: model.max_input_tokens, source: 'bifrost' };
@@ -225,12 +229,12 @@ export class BifrostChatModelProvider implements vscode.LanguageModelChatProvide
 			return { maxInputTokens: model.context_length, source: 'bifrost' };
 		}
 
-		const sibling = siblingContext.get(slugifyModelId(model.id));
+		const sibling = siblings.context.get(slugifyModelId(model.id));
 		if (sibling) {
 			return { maxInputTokens: sibling.maxInputTokens, source: 'sibling', sourceFamily: sibling.family };
 		}
 
-		const fromDatasheet = await this.datasheet.lookup(model.id, token);
+		const fromDatasheet = (await datasheet())?.maxInputTokens;
 		if (fromDatasheet) {
 			return { maxInputTokens: fromDatasheet, source: 'datasheet' };
 		}
@@ -267,22 +271,65 @@ interface SiblingContextEntry {
 	family: string;
 }
 
-/** Maps each base model name to the best context size any provider in this fetch reported directly. */
-function buildSiblingContextIndex(models: readonly BifrostModel[]): Map<string, SiblingContextEntry> {
-	const index = new Map<string, SiblingContextEntry>();
+/** What other providers in this same fetch report directly, keyed by base model name. */
+interface SiblingIndex {
+	/** Best context size any provider reported. */
+	context: Map<string, SiblingContextEntry>;
+	/** Whether any provider that reports input modalities lists image input. */
+	imageInput: Map<string, boolean>;
+}
+
+function buildSiblingIndex(models: readonly BifrostModel[]): SiblingIndex {
+	const context = new Map<string, SiblingContextEntry>();
+	const imageInput = new Map<string, boolean>();
 	for (const model of models) {
+		const slug = slugifyModelId(model.id);
+
+		const modalities = model.architecture?.input_modalities;
+		if (modalities) {
+			imageInput.set(slug, (imageInput.get(slug) ?? false) || modalities.includes('image'));
+		}
+
 		const maxInputTokens = model.max_input_tokens ?? model.context_length;
 		if (!maxInputTokens) {
 			continue;
 		}
-		const slug = slugifyModelId(model.id);
-		const existing = index.get(slug);
+		const existing = context.get(slug);
 		if (!existing || maxInputTokens > existing.maxInputTokens) {
 			const family = model.id.includes('/') ? model.id.split('/')[0] : model.id;
-			index.set(slug, { maxInputTokens, family });
+			context.set(slug, { maxInputTokens, family });
 		}
 	}
-	return index;
+	return { context, imageInput };
+}
+
+/**
+ * Most Bifrost providers (Anthropic, custom OpenAI-compatible ones, ...) report no input
+ * modalities, so absent metadata is not a "no": fall back to another provider's copy of the same
+ * model, then to Bifrost's public registry. Only a model nothing knows about is assumed text-only.
+ */
+async function resolveImageInput(
+	model: BifrostModel,
+	siblings: SiblingIndex,
+	datasheet: () => Promise<DatasheetEntry | undefined>
+): Promise<boolean> {
+	const modalities = model.architecture?.input_modalities;
+	if (modalities) {
+		return modalities.includes('image');
+	}
+	const fromSibling = siblings.imageInput.get(slugifyModelId(model.id));
+	if (fromSibling !== undefined) {
+		return fromSibling;
+	}
+	return (await datasheet())?.vision ?? false;
+}
+
+/**
+ * Bifrost before v2.6.0 doesn't manage OpenCode Go sessions itself, so the extension can send its
+ * own per-conversation id instead. Off by default: v2.6.0+ does this natively.
+ */
+function sendOpenCodeSessionHeader(): boolean {
+	return vscode.workspace.getConfiguration('bifrost').get<boolean>('sendOpenCodeSessionHeader', false);
 }
 
 const DEFAULT_MAX_INPUT_TOKENS = 4096;

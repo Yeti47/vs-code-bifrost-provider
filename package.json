@@ -60,6 +60,12 @@
 					"default": {},
 					"description": "Some Bifrost providers (e.g. ollama, custom OpenAI-compatible providers) report no context-size metadata at all, so a conservative default is used instead. Use this to correct it. Keys can be an exact model id (e.g. \"ollama/llama3.1\") or a provider prefix (e.g. \"ollama\") used when no exact key matches. Values are the model's max input tokens."
 				},
+				"bifrost.sendOpenCodeSessionHeader": {
+					"type": "boolean",
+					"default": false,
+					"scope": "application",
+					"markdownDescription": "Send a per-conversation `x-opencode-session` header (as `x-bf-eh-x-opencode-session`) for OpenCode Go. Only needed for Bifrost versions before v2.6.0, which added native OpenCode session management."
+				},
 				"bifrost.profiles": {
 					"type": "array",
 					"items": {

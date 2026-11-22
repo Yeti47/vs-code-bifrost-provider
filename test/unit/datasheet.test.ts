@@ -17,9 +17,17 @@ function jsonResponse(body: unknown, ok = true): Response {
 	return { ok, status: ok ? 200 : 500, json: async () => body } as unknown as Response;
 }
 
-async function writeDiskCache(context: import('vscode').ExtensionContext, fetchedAt: number, entries: Record<string, number>) {
+async function writeDiskCache(context: import('vscode').ExtensionContext, index: object) {
 	const uri = vscode.Uri.joinPath((context as unknown as { globalStorageUri: vscode.Uri }).globalStorageUri, 'datasheet-index.json');
-	await vscode.workspace.fs.writeFile(uri, Buffer.from(JSON.stringify({ fetchedAt, entries })));
+	await vscode.workspace.fs.writeFile(uri, Buffer.from(JSON.stringify(index)));
+}
+
+const STALE = Date.now() - 25 * 60 * 60 * 1000;
+
+function failingFetch() {
+	return vi.fn(async () => {
+		throw new Error('network down');
+	});
 }
 
 describe('BifrostDatasheet', () => {
@@ -40,7 +48,47 @@ describe('BifrostDatasheet', () => {
 
 		const result = await datasheet.lookup('opencode-go/kimi-k3', fakeToken());
 
-		expect(result).toBe(32000);
+		expect(result?.maxInputTokens).toBe(32000);
+	});
+
+	it('reports vision support when any listing of the model supports it', async () => {
+		vi.stubGlobal(
+			'fetch',
+			vi.fn(async () =>
+				jsonResponse({
+					'providerA/claude-opus-5.5': { mode: 'chat', supports_vision: false },
+					'providerB/claude-opus-5.5': { mode: 'chat', supports_vision: true }
+				})
+			)
+		);
+		const datasheet = new BifrostDatasheet(fakeContext());
+
+		expect(await datasheet.lookup('github-copilot/claude-opus-5.5', fakeToken())).toEqual({ vision: true });
+	});
+
+	it('reads vision support from supports_image_input and supported_modalities too', async () => {
+		vi.stubGlobal(
+			'fetch',
+			vi.fn(async () =>
+				jsonResponse({
+					'p/model-a': { mode: 'chat', supports_image_input: true },
+					'p/model-b': { mode: 'chat', supported_modalities: ['text', 'image'] },
+					'p/model-c': { mode: 'chat', supported_modalities: ['text'] }
+				})
+			)
+		);
+		const datasheet = new BifrostDatasheet(fakeContext());
+
+		expect((await datasheet.lookup('model-a', fakeToken()))?.vision).toBe(true);
+		expect((await datasheet.lookup('model-b', fakeToken()))?.vision).toBe(true);
+		expect((await datasheet.lookup('model-c', fakeToken()))?.vision).toBe(false);
+	});
+
+	it('leaves vision unknown when no listing mentions it', async () => {
+		vi.stubGlobal('fetch', vi.fn(async () => jsonResponse({ 'p/model-x': { mode: 'chat', max_input_tokens: 1000 } })));
+		const datasheet = new BifrostDatasheet(fakeContext());
+
+		expect(await datasheet.lookup('model-x', fakeToken())).toEqual({ maxInputTokens: 1000 });
 	});
 
 	it('ignores entries that are not chat models', async () => {
@@ -55,7 +103,7 @@ describe('BifrostDatasheet', () => {
 		expect(await datasheet.lookup('embed-model', fakeToken())).toBeUndefined();
 	});
 
-	it('ignores entries with no max_input_tokens', async () => {
+	it('ignores entries with neither max_input_tokens nor vision info', async () => {
 		vi.stubGlobal('fetch', vi.fn(async () => jsonResponse({ 'provider/model-x': { mode: 'chat' } })));
 		const datasheet = new BifrostDatasheet(fakeContext());
 
@@ -74,7 +122,7 @@ describe('BifrostDatasheet', () => {
 		);
 		const datasheet = new BifrostDatasheet(fakeContext());
 
-		expect(await datasheet.lookup('providerC/model-x', fakeToken())).toBe(8192);
+		expect((await datasheet.lookup('providerC/model-x', fakeToken()))?.maxInputTokens).toBe(8192);
 	});
 
 	it('returns undefined when the fetch fails and there is no cache', async () => {
@@ -102,16 +150,20 @@ describe('BifrostDatasheet', () => {
 
 	it('falls back to a stale on-disk cache when the network fetch fails', async () => {
 		const context = fakeContext();
-		await writeDiskCache(context, Date.now() - 25 * 60 * 60 * 1000, { 'model-x': 5555 });
-		vi.stubGlobal(
-			'fetch',
-			vi.fn(async () => {
-				throw new Error('network down');
-			})
-		);
+		await writeDiskCache(context, { schemaVersion: 2, fetchedAt: STALE, entries: { 'model-x': { maxInputTokens: 5555 } } });
+		vi.stubGlobal('fetch', failingFetch());
 		const datasheet = new BifrostDatasheet(context);
 
-		expect(await datasheet.lookup('model-x', fakeToken())).toBe(5555);
+		expect((await datasheet.lookup('model-x', fakeToken()))?.maxInputTokens).toBe(5555);
+	});
+
+	it('ignores an on-disk cache written in an older format', async () => {
+		const context = fakeContext();
+		await writeDiskCache(context, { fetchedAt: Date.now(), entries: { 'model-x': 5555 } });
+		vi.stubGlobal('fetch', failingFetch());
+		const datasheet = new BifrostDatasheet(context);
+
+		expect(await datasheet.lookup('model-x', fakeToken())).toBeUndefined();
 	});
 
 	it('fires onDidUpdate after a successful background refresh', async () => {
@@ -140,8 +192,8 @@ describe('BifrostDatasheet', () => {
 		const [first, second] = [datasheet.lookup('model-x', fakeToken()), datasheet.lookup('model-x', fakeToken())];
 		resolveFetch(jsonResponse({ 'provider/model-x': { mode: 'chat', max_input_tokens: 42 } }));
 
-		expect(await first).toBe(42);
-		expect(await second).toBe(42);
+		expect((await first)?.maxInputTokens).toBe(42);
+		expect((await second)?.maxInputTokens).toBe(42);
 		expect(fetchMock).toHaveBeenCalledTimes(1);
 	});
 });

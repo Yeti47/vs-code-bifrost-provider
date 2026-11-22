@@ -162,6 +162,15 @@ describe('streamChatCompletion', () => {
 		expect((options as RequestInit).headers).toMatchObject({ 'x-bf-eh-x-opencode-session': 'conversation-42' });
 	});
 
+	it('omits the x-bf-eh-x-opencode-session header when no sessionId is set', async () => {
+		vi.mocked(fetch).mockResolvedValueOnce(sseResponse(['data: [DONE]\n']));
+
+		await collect(streamChatCompletion(connection, request, {}, new AbortController().signal));
+
+		const [, options] = vi.mocked(fetch).mock.calls[0];
+		expect((options as RequestInit).headers).not.toHaveProperty('x-bf-eh-x-opencode-session');
+	});
+
 	it('sends the profile as the x-bf-profile header when one is set', async () => {
 		vi.mocked(fetch).mockResolvedValueOnce(sseResponse(['data: [DONE]\n']));
 

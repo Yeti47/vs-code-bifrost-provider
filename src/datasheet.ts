@@ -5,23 +5,37 @@ import { slugifyModelId } from './modelSlug';
 const DATASHEET_URL = 'https://getbifrost.ai/datasheet/model-parameters';
 const CACHE_TTL_MS = 24 * 60 * 60 * 1000;
 const CACHE_FILE_NAME = 'datasheet-index.json';
+// Bump when the index shape changes; a cache with another version is ignored and refetched.
+const INDEX_SCHEMA_VERSION = 2;
 const FETCH_TIMEOUT_MS = 30_000;
 const INLINE_WAIT_MS = 8_000;
 
+/** What the registry knows about one base model name, merged across every provider listing it. */
+export interface DatasheetEntry {
+	/** Largest max input tokens any listing reports. */
+	maxInputTokens?: number;
+	/** True if any listing reports image input, false if listings only report its absence. */
+	vision?: boolean;
+}
+
 interface DatasheetIndex {
+	schemaVersion: number;
 	fetchedAt: number;
-	/** Lowercased last path segment of a model id -> best-known max input tokens. */
-	entries: Record<string, number>;
+	/** Lowercased last path segment of a model id -> merged entry. */
+	entries: Record<string, DatasheetEntry>;
 }
 
 interface RawDatasheetEntry {
 	mode?: string;
 	max_input_tokens?: number;
+	supports_vision?: boolean;
+	supports_image_input?: boolean;
+	supported_modalities?: string[];
 }
 
 /**
  * Best-effort lookup against Bifrost's public model registry (getbifrost.ai/datasheet), used to
- * fill in context sizes for models that a given Bifrost instance reports no metadata for (e.g.
+ * fill in context sizes and image input support for models that a given Bifrost instance reports no metadata for (e.g.
  * ollama, custom OpenAI-compatible providers). Matches by base model name only, ignoring which
  * provider the registry happens to list it under, since the same open-weight model is often
  * cataloged under an unrelated host.
@@ -44,7 +58,7 @@ export class BifrostDatasheet implements vscode.Disposable {
 	 * (one-time, ~daily) network fetch, then gives up and lets it finish in the background —
 	 * `onDidUpdate` fires once it does, so a subsequent listing picks up the real value.
 	 */
-	async lookup(modelId: string, token: vscode.CancellationToken): Promise<number | undefined> {
+	async lookup(modelId: string, token: vscode.CancellationToken): Promise<DatasheetEntry | undefined> {
 		const index = await this.getIndexWithBoundedWait(token);
 		return index?.entries[slugifyModelId(modelId)];
 	}
@@ -97,16 +111,27 @@ export class BifrostDatasheet implements vscode.Disposable {
 		}
 		const raw = await res.json() as Record<string, RawDatasheetEntry>;
 
-		const entries: Record<string, number> = {};
+		const entries: Record<string, DatasheetEntry> = {};
 		for (const [key, value] of Object.entries(raw)) {
-			if (value.mode !== 'chat' || !value.max_input_tokens) {
+			if (value.mode !== 'chat') {
+				continue;
+			}
+			const vision = readVision(value);
+			if (!value.max_input_tokens && vision === undefined) {
 				continue;
 			}
 			const slug = slugifyModelId(key);
-			entries[slug] = Math.max(entries[slug] ?? 0, value.max_input_tokens);
+			const entry = entries[slug] ?? {};
+			if (value.max_input_tokens) {
+				entry.maxInputTokens = Math.max(entry.maxInputTokens ?? 0, value.max_input_tokens);
+			}
+			if (vision !== undefined) {
+				entry.vision = entry.vision || vision;
+			}
+			entries[slug] = entry;
 		}
 
-		return { fetchedAt: Date.now(), entries };
+		return { schemaVersion: INDEX_SCHEMA_VERSION, fetchedAt: Date.now(), entries };
 	}
 
 	private get cacheUri(): vscode.Uri {
@@ -116,7 +141,8 @@ export class BifrostDatasheet implements vscode.Disposable {
 	private async loadDiskCache(): Promise<DatasheetIndex | undefined> {
 		try {
 			const bytes = await vscode.workspace.fs.readFile(this.cacheUri);
-			return JSON.parse(Buffer.from(bytes).toString('utf8')) as DatasheetIndex;
+			const index = JSON.parse(Buffer.from(bytes).toString('utf8')) as DatasheetIndex;
+			return index.schemaVersion === INDEX_SCHEMA_VERSION ? index : undefined;
 		} catch {
 			return undefined;
 		}
@@ -130,4 +156,14 @@ export class BifrostDatasheet implements vscode.Disposable {
 			// Non-fatal: worst case we refetch next time.
 		}
 	}
+}
+
+function readVision(entry: RawDatasheetEntry): boolean | undefined {
+	if (entry.supports_vision !== undefined || entry.supports_image_input !== undefined) {
+		return entry.supports_vision === true || entry.supports_image_input === true;
+	}
+	if (entry.supported_modalities) {
+		return entry.supported_modalities.includes('image');
+	}
+	return undefined;
 }

@@ -2,8 +2,11 @@ import { BifrostConnection, BifrostModel, BifrostModelsResponse, OpenAIChatCompl
 
 /** Per-request metadata carried in headers rather than the OpenAI-shaped body. */
 export interface ChatRequestContext {
-	/** Stable per-conversation id; see sessionTracking.ts. */
-	sessionId: string;
+	/**
+	 * Stable per-conversation id for OpenCode Go (see sessionTracking.ts). Only set when the
+	 * `bifrost.sendOpenCodeSessionHeader` setting is on; current Bifrost manages these itself.
+	 */
+	sessionId?: string;
 	/** Selected profile, sent as x-bf-profile for Bifrost routing rules / log filtering. */
 	profile?: string;
 }
@@ -61,12 +64,14 @@ export async function* streamChatCompletion(
 ): AsyncGenerator<OpenAIStreamChunk, void, undefined> {
 	const headers: Record<string, string> = {
 		'Content-Type': 'application/json',
-		Authorization: `Bearer ${connection.apiKey}`,
-		// Forwarded verbatim to the upstream provider by Bifrost (x-bf-eh-* is stripped
-		// and re-emitted); OpenCode Go requires one stable id per conversation. See
-		// sessionTracking.ts for how sessionId is derived.
-		'x-bf-eh-x-opencode-session': requestContext.sessionId
+		Authorization: `Bearer ${connection.apiKey}`
 	};
+	if (requestContext.sessionId) {
+		// Forwarded verbatim to the upstream provider by Bifrost (x-bf-eh-* is stripped
+		// and re-emitted); OpenCode Go wants one stable id per conversation. See
+		// sessionTracking.ts for how sessionId is derived.
+		headers['x-bf-eh-x-opencode-session'] = requestContext.sessionId;
+	}
 	if (requestContext.profile) {
 		// Consumed by Bifrost itself (routing rules, log filters); not forwarded upstream.
 		headers['x-bf-profile'] = requestContext.profile;
